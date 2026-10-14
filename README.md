@@ -1,0 +1,126 @@
+# rag-demo：从 RAG 链到 Function Calling Agent 与 LangGraph 状态图
+
+> A hands-on Chinese RAG project built with LangChain 1.x and LangGraph. It starts from a plain LCEL RAG chain, then upgrades it to a function-calling agent (`create_agent`) and an explicit LangGraph state machine that routes each question to **retrieve / answer directly / refuse**, with relevance grading, query rewriting and an evaluation suite comparing all three.
+
+一个可以完整跑通、带评估的中文 RAG 学习项目。知识库是三篇 LLM 应用开发的技术笔记，覆盖 LangChain、LlamaIndex、RAG、Agent、SGLang、vLLM 等主题，放在 [`data/knowledge-base/`](data/knowledge-base/)。
+
+同一套检索能力做了三种实现，用同一份评估集横向对比：
+
+| 实现 | 文件 | 特点 |
+|---|---|---|
+| RAG 链（对照组） | `rag_chain.py`、`chat.py` | LCEL 固定流水线，每个问题都检索 |
+| Function Calling Agent | `agent.py` | `create_agent`，模型自己决定要不要调用检索 tool |
+| LangGraph 状态图 | `graph_agent.py` | 路由、检索、相关性判断、改写重试、生成、拒答都是显式节点 |
+
+![LangGraph 状态图](docs/graph_agent.png)
+
+## 功能
+
+- **离线建库**：先按 Markdown 标题、再按长度二次切分，每个片段带上“章 > 节”标题路径；用本地 `bge-small-zh-v1.5` 向量化，存入 Chroma
+- **带引用的回答**：答案里的 `[n]` 和打印出的来源编号一一对应
+- **三类路由**：知识库相关的问题检索后回答；寒暄、问助手身份直接回答；库外问题和实时信息拒答
+- **检索后拒答**：图版本先判断检索到的资料是否相关，不相关就改写问题重试一次，仍然不相关才拒答
+- **多轮对话**：checkpointer 按 `thread_id` 保存历史，追问里的“它”由模型在调用 tool 时改写成完整问题
+- **评估**：检索指标（Hit Rate、MRR）、路由混淆矩阵、关键点覆盖率、拒答准确率、每题 LLM 调用次数和 token 成本
+- **离线测试**：用剧本模型和假检索器覆盖状态图全部分支，不需要 API Key
+
+## 快速开始
+
+需要 Python 3.10 及以上（在 3.12 上测试通过），以及一个支持 function calling 的 OpenAI 兼容 LLM 接口，比如 DeepSeek、通义千问、OpenAI。
+
+```bash
+python -m venv .venv
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+source .venv/bin/activate
+
+# 先装 CPU 版 torch 可以省下几个 GB（有 GPU 可以跳过这一步）
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+
+cp .env.example .env              # 填写 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+python download_model.py          # 从魔搭下载 Embedding 模型到 models/（能访问 HuggingFace 可以跳过）
+python ingest.py                  # 建库
+python check_env.py               # 确认 LLM 和 Embedding 都能调通
+```
+
+开始使用：
+
+```bash
+python rag_chain.py "LCEL 是什么？"     # 单轮 RAG
+python chat.py                          # RAG 链多轮对话
+python agent_cli.py --mode graph        # LangGraph 状态图 Agent（或 --mode agent）
+python graph_agent.py --draw            # 导出状态图到 docs/
+```
+
+## 评估
+
+```bash
+python eval/evaluate.py --retrieval-only   # 只评检索，不需要 LLM
+python eval/evaluate.py --experiment       # 对比 chunk_size、k、检索指令
+python eval/evaluate_agent.py --mode all   # 对比 chain / agent / graph 三种实现
+python -m pytest tests -q                  # 离线测试
+```
+
+评估集：[`eval/qa.jsonl`](eval/qa.jsonl) 有 17 题（15 道知识库题、2 道库外题），[`eval/qa_agent.jsonl`](eval/qa_agent.jsonl) 有 11 题（直答、库外、检索后拒答、多轮指代）。
+
+### 检索结果
+
+当前配置为 chunk_size=500、k=5、查询端加 bge 检索指令。15 道知识库题的结果：**Hit Rate@5 = 1.000，MRR@5 = 0.791**。
+
+chunk_size 和 k 的对比（`--experiment`）：
+
+| chunk_size | 片段数 | 检索指令 | Hit@3 | MRR@3 | Hit@5 | MRR@5 |
+|---:|---:|:---:|---:|---:|---:|---:|
+| 300 | 353 | 加 | 1.000 | 0.778 | 1.000 | 0.778 |
+| 300 | 353 | 不加 | 0.933 | 0.767 | 1.000 | 0.783 |
+| 500 | 234 | 加 | 0.933 | 0.778 | 1.000 | 0.791 |
+| 500 | 234 | 不加 | 0.867 | 0.744 | 1.000 | 0.774 |
+| 800 | 178 | 加 | 0.867 | 0.722 | 1.000 | 0.756 |
+| 800 | 178 | 不加 | 0.933 | 0.800 | 1.000 | 0.813 |
+
+k=5 时所有配置都能全部召回；k=3 时，chunk_size 300 和 500 下检索指令有帮助，800 时反而变差。评估集只有 15 题，一题的差异就是 0.067，这些结论只作参考。
+
+### 三种实现对比
+
+> 待补充：需要用真实 LLM 运行 `python eval/evaluate_agent.py --mode all`。
+
+## 项目结构
+
+```
+config.py            配置：LLM、Embedding、Chroma、检索参数（都可以用 .env 覆盖）
+ingest.py            建库：加载、切分、向量化、写入 Chroma
+rag_chain.py         单轮 RAG 链，以及共用的 format_docs / print_sources
+chat.py              RAG 链的多轮对话（单独一条问题改写链）
+tools.py             Agent 共享层：检索 tool、路由决策 tool、Prompt、调用计数
+agent.py             实现 A：create_agent
+graph_agent.py       实现 B：LangGraph StateGraph
+agent_cli.py         两种 Agent 的多轮对话命令行
+download_model.py    从魔搭下载 Embedding 模型
+check_env.py         检查 LLM 和 Embedding 是否可用
+data/knowledge-base/ 知识库笔记（CC BY 4.0）
+eval/                评估集和评估脚本
+tests/               离线测试（剧本模型 + 假检索器）
+docs/                导出的状态图
+```
+
+## 设计说明
+
+- **检索 tool 用 `content_and_artifact`**：模型看到的是带编号的资料文本，程序同时拿到原始 `Document` 列表，用于打印引用和计算检索指标。
+- **路由用 function calling 强制三选一**：`search_knowledge_base`、`answer_directly`、`refuse` 三个 tool，配合 `tool_choice="required"`。服务商不支持 `required` 时自动退回 `auto`，此时模型没调用 tool 就按直答处理。
+- **路由用的 tool call 不写进对话历史**：`messages` 只保存每轮的用户问题和最终答案。否则下一轮会出现“有 tool call 却没有对应 ToolMessage”的消息，违反 OpenAI 的消息协议。
+- **拒答节点不调用 LLM**：输出固定话术，评估可以直接做字符串匹配。
+- **相关性判断失败时默认判为相关**：宁可多生成一次答案，也不要误拒答。
+
+## 换成自己的文档
+
+把 Markdown 文件放进 `data/knowledge-base/`，或者在 `.env` 里设置 `KB_DIR` 指向其他目录，然后重新运行 `python ingest.py`。评估集里的 `expected_source` 和 `expected_section` 要按新文档重写。修改 `tools.py` 里的 `KB_TOPICS` 和检索 tool 的 docstring，模型才知道新知识库覆盖哪些主题。
+
+## 常见问题
+
+- **Windows 上读文件报 GBK 解码错误**：`ingest.py` 已经显式使用 utf-8 读取，自己加载文件时也要指定 `encoding="utf-8"`。
+- **下载 Embedding 模型卡住**：在 `.env` 里打开 `HF_ENDPOINT=https://hf-mirror.com`，或者直接运行 `python download_model.py` 从魔搭下载。
+- **修改了切分参数或 Embedding 模型**：必须重新运行 `ingest.py`，否则库里的向量和查询向量对不上，检索结果会失真。
+
+## License
+
+代码采用 [MIT](LICENSE) 协议，`data/knowledge-base/` 下的笔记采用 [CC BY 4.0](data/knowledge-base/LICENSE) 协议。

@@ -1,0 +1,30 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	router(router)
+	retrieve(retrieve)
+	grade(grade)
+	rewrite(rewrite)
+	generate(generate)
+	direct(direct)
+	refuse(refuse)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> router;
+	grade -.-> generate;
+	grade -.-> refuse;
+	grade -.-> rewrite;
+	retrieve --> grade;
+	rewrite --> retrieve;
+	router -.-> direct;
+	router -.-> refuse;
+	router -.-> retrieve;
+	direct --> __end__;
+	generate --> __end__;
+	refuse --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

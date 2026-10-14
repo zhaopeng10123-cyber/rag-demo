@@ -1,0 +1,11 @@
+{"question": "你好", "expected_route": "direct", "expected_source": "", "expected_section": [], "key_points": [], "answerable": false}
+{"question": "你能做什么？", "expected_route": "direct", "expected_source": "", "expected_section": [], "key_points": [], "answerable": false}
+{"question": "谢谢你的解答！", "expected_route": "direct", "expected_source": "", "expected_section": [], "key_points": [], "answerable": false}
+{"question": "你是谁？", "expected_route": "direct", "expected_source": "", "expected_section": [], "key_points": [], "answerable": false}
+{"question": "帮我用 Java 写一个快速排序", "expected_route": "refuse", "expected_source": "", "expected_section": [], "key_points": [], "answerable": false}
+{"question": "今天是几号？", "expected_route": "refuse", "expected_source": "", "expected_section": [], "key_points": [], "answerable": false}
+{"question": "vLLM 是哪家机构开发的？", "expected_route": "retrieve", "expected_source": "03-vLLM连续批处理与Triton-TensorRT.md", "expected_section": ["1.1 背景"], "key_points": ["Berkeley|伯克利"], "answerable": true}
+{"question": "Milvus 分布式集群怎么部署？", "expected_route": "retrieve_refuse", "expected_source": "", "expected_section": [], "key_points": [], "answerable": false}
+{"question": "LangSmith 怎么收费？", "expected_route": "retrieve_refuse", "expected_source": "", "expected_section": [], "key_points": [], "answerable": false}
+{"history": ["LangChain 里的 Retriever 是什么？"], "question": "它和 Vector Store 有什么区别？", "expected_route": "retrieve", "query_must_contain": ["Retriever"], "expected_source": "01-LangChain与LlamaIndex从零入门.md", "expected_section": ["6.3 核心组件"], "key_points": ["通用"], "answerable": true}
+{"history": ["SGLang 是什么？"], "question": "它和 vLLM 应该怎么选？", "expected_route": "retrieve", "query_must_contain": ["SGLang"], "expected_source": "02-SGLang与大模型推理部署.md", "expected_section": ["第 8 章 SGLang vs vLLM"], "key_points": ["多轮|Agent|前缀", "兼容"], "answerable": true}

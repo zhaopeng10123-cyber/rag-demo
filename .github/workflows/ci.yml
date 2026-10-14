@@ -1,0 +1,20 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # 先装 CPU 版 torch，否则 sentence-transformers 会拉取体积很大的 CUDA 版
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements.txt
+      # 离线测试：用剧本模型和假检索器，不需要 API Key 和 Embedding 模型
+      - run: python -m pytest tests -q
