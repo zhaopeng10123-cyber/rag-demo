@@ -4,6 +4,7 @@ agent.py（create_agent）和 graph_agent.py（StateGraph）都从这里取 tool
 """
 from pathlib import Path
 from typing import Any, Literal, TypedDict
+from uuid import UUID
 
 import config
 from langchain_core.callbacks import BaseCallbackHandler
@@ -143,11 +144,22 @@ class CallCounter(BaseCallbackHandler):
     def __init__(self) -> None:
         self.calls = 0
         self.tokens = 0
+        self._streamed: dict[UUID, int] = {}
 
     def on_chat_model_start(self, serialized: dict, messages: list, **kwargs: Any) -> None:
         self.calls += 1
 
-    def on_llm_end(self, response, **kwargs: Any) -> None:
+    def on_llm_new_token(self, token: str, *, chunk=None, run_id: UUID, **kwargs: Any) -> None:
+        usage = getattr(getattr(chunk, "message", None), "usage_metadata", None) or {}
+        if usage:
+            self._streamed[run_id] = max(self._streamed.get(run_id, 0), usage.get("total_tokens", 0))
+
+    def on_llm_end(self, response, *, run_id: UUID, **kwargs: Any) -> None:
+        if run_id in self._streamed:
+            # 部分 OpenAI 兼容服务（如硅基流动）每个流式分块都带累计用量，LangChain 合并分块时会把它们相加，
+            # 所以流式调用取分块里的最大值
+            self.tokens += self._streamed.pop(run_id)
+            return
         for gens in response.generations:
             for gen in gens:
                 usage = getattr(getattr(gen, "message", None), "usage_metadata", None) or {}

@@ -22,6 +22,11 @@ TOP_K = int(os.getenv("TOP_K", "5"))
 # bge 中文模型官方推荐：短查询加检索指令，文档端不加
 QUERY_INSTRUCTION = os.getenv("QUERY_INSTRUCTION", "为这个句子生成表示以用于检索相关文章：")
 
+# API 服务（api.py）。API_KEYS 为逗号分隔的访问密钥，留空则不校验、按客户端 IP 限流
+RATE_LIMIT = os.getenv("RATE_LIMIT", "10/minute")
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "4"))
+API_KEYS = [k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()]
+
 
 def get_llm(temperature: float = 0):
     from langchain_openai import ChatOpenAI
@@ -34,6 +39,8 @@ def get_llm(temperature: float = 0):
         api_key=api_key,
         model=os.getenv("LLM_MODEL", "deepseek-chat"),
         temperature=temperature,
+        # 流式输出时也返回 token 用量，CallCounter 才统计得到
+        stream_usage=True,
     )
 
 

@@ -3,36 +3,14 @@
 运行：python -m pytest tests -q
 """
 import pytest
-from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableLambda
 
 import agent
 import graph_agent
 import tools
 from graph_agent import Grade
 from rag_chain import REFUSAL, format_docs
-from tests.fake_models import ScriptedChatModel, tool_call
-
-DOCS = [
-    Document(page_content="【2.3 什么是 KV Cache】K、V 算一次就缓存。",
-             metadata={"source": "02.md", "section": "第 2 章 > 2.3 什么是 KV Cache"}),
-    Document(page_content="【2.4 显存】KV Cache 占显存。",
-             metadata={"source": "02.md", "section": "第 2 章 > 2.4 KV Cache 带来的新问题：显存"}),
-]
-
-
-@pytest.fixture(autouse=True)
-def fake_retriever(monkeypatch):
-    """检索词里带“空”时返回空列表，其余返回固定的 DOCS，不加载 Embedding 模型。"""
-    queries = []
-
-    def search(query: str):
-        queries.append(query)
-        return [] if "空" in query else DOCS
-
-    monkeypatch.setattr(tools, "_retriever", RunnableLambda(search))
-    return queries
+from tests.fake_models import DOCS, ScriptedChatModel, tool_call
 
 
 def router_inputs(llm: ScriptedChatModel) -> list[list]:

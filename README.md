@@ -22,7 +22,8 @@
 - **检索后拒答**：图版本先判断检索到的资料是否相关，不相关就改写问题重试一次，仍然不相关才拒答
 - **多轮对话**：checkpointer 按 `thread_id` 保存历史，追问里的“它”由模型在调用 tool 时改写成完整问题
 - **评估**：检索指标（Hit Rate、MRR）、路由混淆矩阵、关键点覆盖率、拒答准确率、每题 LLM 调用次数和 token 成本
-- **离线测试**：用剧本模型和假检索器覆盖状态图全部分支，不需要 API Key
+- **HTTP 接口**：FastAPI 把三种实现包成 SSE 流式接口，逐字推送答案和处理进度，按客户端限流并限制全局并发
+- **离线测试**：用剧本模型和假检索器覆盖状态图全部分支和 HTTP 接口，不需要 API Key
 
 ## 快速开始
 
@@ -51,6 +52,42 @@ python chat.py                          # RAG 链多轮对话
 python agent_cli.py --mode graph        # LangGraph 状态图 Agent（或 --mode agent）
 python graph_agent.py --draw            # 导出状态图到 docs/
 ```
+
+## HTTP 接口（SSE 流式 + 限流）
+
+```bash
+uvicorn api:app --host 127.0.0.1 --port 8000   # 接口文档：http://127.0.0.1:8000/docs
+python api_client.py                            # 命令行多轮对话客户端（--mode graph|agent|chain）
+```
+
+`POST /chat/stream`，请求体 `{"question": "...", "session_id": "可选", "mode": "graph"}`，返回 `text/event-stream`：
+
+| 事件 | 数据 | 说明 |
+|---|---|---|
+| `session` | `{"session_id", "mode"}` | 第一个事件。没传 `session_id` 时服务端新建一个，下一轮带上它就是多轮对话 |
+| `step` | `{"node", "detail"}` | 处理进度，例如 `router(retrieve: ...)`、`grade(相关: ...)` |
+| `token` | `{"text"}` | 答案增量。只转发作答节点的 LLM 输出，路由、相关性判断、改写的中间输出不会混进来 |
+| `sources` | `{"sources": [{"id", "source", "section"}]}` | 检索作答时才有，`id` 对应答案里的 `[n]` |
+| `done` | `{"route", "answer", "queries", "llm_calls", "tokens", "first_token_latency", "latency"}` | 最后一个事件 |
+| `error` | `{"message", "status"}` | 回答中途出错时代替 `done` |
+
+服务端在空闲时每 15 秒发送一次 `: ping` 心跳注释，推理模型长时间思考时连接也不会被代理断开。
+
+```bash
+curl -N http://127.0.0.1:8000/chat/stream -H "Content-Type: application/json" \
+  -d '{"question": "什么是 LCEL？"}'
+```
+
+限流在建立 SSE 连接之前检查，所以客户端能拿到正常的 HTTP 状态码：
+
+| 状态码 | 触发条件 | 配置 |
+|---|---|---|
+| 429 | 单个客户端超过频率上限，响应带 `Retry-After` | `RATE_LIMIT=10/minute`（令牌桶，允许短时突发） |
+| 503 | 同时进行中的回答达到上限 | `MAX_CONCURRENT=4` |
+| 409 | 同一会话的上一个问题还没回答完 | 无 |
+| 401 | 配置了 `API_KEYS` 但请求没带正确的 `X-API-Key` | `API_KEYS=key1,key2` |
+
+配置了 `API_KEYS` 时按密钥限流，否则按客户端 IP 限流。每个成功的响应都带 `X-RateLimit-Remaining` 头。限流状态和会话历史都存在进程内存里，所以只适合单进程部署；多 worker 或多实例部署时，需要换成 Redis 等共享存储。
 
 ## 评估
 
@@ -116,6 +153,10 @@ tools.py             Agent 共享层：检索 tool、路由决策 tool、Prompt�
 agent.py             实现 A：create_agent
 graph_agent.py       实现 B：LangGraph StateGraph
 agent_cli.py         两种 Agent 的多轮对话命令行
+api.py               FastAPI 服务：SSE 流式接口、限流、会话管理
+streaming.py         三种实现的流式问答，统一输出 step / token / sources / done 事件
+ratelimit.py         令牌桶限流和并发上限
+api_client.py        SSE 命令行客户端
 download_model.py    从魔搭下载 Embedding 模型
 check_env.py         检查 LLM 和 Embedding 是否可用
 data/knowledge-base/ 知识库笔记（CC BY 4.0）
@@ -131,6 +172,7 @@ docs/                导出的状态图
 - **路由用的 tool call 不写进对话历史**：`messages` 只保存每轮的用户问题和最终答案。否则下一轮会出现“有 tool call 却没有对应 ToolMessage”的消息，违反 OpenAI 的消息协议。
 - **拒答节点不调用 LLM**：输出固定话术，评估可以直接做字符串匹配。
 - **相关性判断失败时默认判为相关**：宁可多生成一次答案，也不要误拒答。
+- **流式 token 用量取最大值**：硅基流动等服务在每个流式分块里都返回累计用量，LangChain 合并分块时会把它们相加，导致 token 数虚高上百倍。`CallCounter` 对流式调用只取分块里的最大值。
 
 ## 换成自己的文档
 

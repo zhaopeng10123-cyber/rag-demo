@@ -10,4 +10,7 @@ openai==3.29.0
 pydantic==2.14.1
 sentence-transformers==6.1.0
 python-dotenv==1.2.4
+fastapi==0.143.1
+uvicorn==0.54.0
+httpx==0.28.1
 pytest==9.1.1

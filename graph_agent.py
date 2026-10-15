@@ -159,16 +159,23 @@ def describe(node: str, delta: dict) -> str:
     return node
 
 
+def turn_inputs(question: str) -> dict:
+    # checkpointer 会保留上一轮的所有字段，除 messages 外每轮都要显式重置
+    return {"messages": [HumanMessage(question)], "question": question, "standalone": "", "query": "",
+            "route": "", "reason": "", "docs": [], "relevant": False, "retries": 0, "answer": ""}
+
+
+def final_route(route: str, trace: list[str]) -> str:
+    return "retrieve_refuse" if route == "retrieve" and trace and trace[-1] == "refuse" else route
+
+
 def ask(app, question: str, thread_id: str) -> AgentResult:
     counter = CallCounter()
     cfg = {"configurable": {"thread_id": thread_id}, "callbacks": [counter]}
-    # checkpointer 会保留上一轮的所有字段，除 messages 外每轮都要显式重置
-    inputs = {"messages": [HumanMessage(question)], "question": question, "standalone": "", "query": "",
-              "route": "", "reason": "", "docs": [], "relevant": False, "retries": 0, "answer": ""}
 
     start = time.perf_counter()
     trace, queries = [], []
-    for update in app.stream(inputs, cfg, stream_mode="updates"):
+    for update in app.stream(turn_inputs(question), cfg, stream_mode="updates"):
         for node, delta in update.items():
             trace.append(describe(node, delta or {}))
             if node in ("router", "rewrite") and delta.get("query"):
@@ -176,9 +183,7 @@ def ask(app, question: str, thread_id: str) -> AgentResult:
     latency = time.perf_counter() - start
 
     state = app.get_state(cfg).values
-    route = state["route"]
-    if route == "retrieve" and trace[-1] == "refuse":
-        route = "retrieve_refuse"
+    route = final_route(state["route"], trace)
     return AgentResult(route=route, queries=queries, docs=state.get("docs", []), answer=state["answer"],
                        trace=trace, llm_calls=counter.calls, tokens=counter.tokens, latency=latency)
 

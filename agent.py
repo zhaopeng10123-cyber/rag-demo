@@ -35,6 +35,13 @@ def build_agent(llm=None, checkpointer=None):
     )
 
 
+def infer_route(queries: list[str], answer: str) -> str:
+    refused = is_refusal(answer)
+    if queries:
+        return "retrieve_refuse" if refused else "retrieve"
+    return "refuse" if refused else "direct"
+
+
 def ask(agent, question: str, thread_id: str) -> AgentResult:
     counter = CallCounter()
     cfg = {"configurable": {"thread_id": thread_id}, "callbacks": [counter]}
@@ -59,12 +66,7 @@ def ask(agent, question: str, thread_id: str) -> AgentResult:
             trace.append("model -> 最终答案")
 
     answer = state["messages"][-1].text
-    refused = is_refusal(answer)
-    if queries:
-        route = "retrieve_refuse" if refused else "retrieve"
-    else:
-        route = "refuse" if refused else "direct"
-    return AgentResult(route=route, queries=queries, docs=docs, answer=answer, trace=trace,
+    return AgentResult(route=infer_route(queries, answer), queries=queries, docs=docs, answer=answer, trace=trace,
                        llm_calls=counter.calls, tokens=counter.tokens, latency=latency)
 
 
