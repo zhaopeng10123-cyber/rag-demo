@@ -142,6 +142,20 @@ k=5 时所有配置都能全部召回；k=3 时，chunk_size 300 和 500 下检�
 
 评估集很小，模型也只是 8B，这些数字只用来比较三种实现的相对差异。换更大的模型后，create_agent 在多轮追问上的表现通常会明显改善。
 
+### LangChain vs LlamaIndex 对照实验
+
+[`experiments/llamaindex/`](experiments/llamaindex/) 用 LlamaIndex 平行实现了一遍，对齐了知识库、Embedding 和检索指令、chunk_size=300、top-k，评估集补充到 48 题。主线代码没有改动。
+
+| 实验组 | Hit@5 | MRR@5 | 逐题对比 LangChain 基线（变好/变差） |
+|---|---:|---:|---|
+| LangChain 基线 | 0.958 | 0.792 | — |
+| LlamaIndex，复用 LangChain 的片段 | 0.958 | 0.792 | 0 / 0，逐题完全一致 |
+| LlamaIndex 惯用管线（默认把文件路径拼进向量） | 0.896 | 0.720 | 5 / 13 |
+| LlamaIndex 惯用管线，去掉路径 | 0.938 | 0.780 | 9 / 9 |
+| LangChain 基线 + bge-reranker（召回 20 条再重排） | **0.979** | **0.908** | 11 / 3 |
+
+结论：片段相同时两个框架的检索没有区别，差异来自切分方式和默认往向量里拼了什么；reranker 是唯一稳定的提升。sentence-window、问答对比，以及对齐时踩到的 9 个隐藏默认值，见[实验说明](experiments/llamaindex/README.md)。
+
 ## 项目结构
 
 ```
@@ -161,6 +175,7 @@ download_model.py    从魔搭下载 Embedding 模型
 check_env.py         检查 LLM 和 Embedding 是否可用
 data/knowledge-base/ 知识库笔记（CC BY 4.0）
 eval/                评估集和评估脚本
+experiments/         对照实验（LlamaIndex 平行实现），不影响主线
 tests/               离线测试（剧本模型 + 假检索器）
 docs/                导出的状态图
 ```
