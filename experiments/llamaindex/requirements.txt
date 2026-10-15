@@ -1,0 +1,9 @@
+# 在主线 requirements.txt 的基础上再装这几个，实测不会改动主线已装的任何包
+llama-index-core==0.14.25
+llama-index-embeddings-huggingface==0.8.0
+llama-index-vector-stores-chroma==0.6.0
+# 没有用 llama-index-llms-openai-like：它要求 openai<3，会把 langchain-openai 依赖的 openai 3.x 降级，
+# 所以 llama_rag.py 里自己写了一个几十行的 OpenAICompatibleLLM
+#
+# reranker 实验需要 BAAI/bge-reranker-base（约 1.1 GB）：python download_model.py BAAI/bge-reranker-base
+# 会下载到 models/bge-reranker-base/；其中的 onnx/ 目录用不到，可以删掉

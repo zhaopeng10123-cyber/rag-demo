@@ -5,3 +5,4 @@ models/
 __pycache__/
 .pytest_cache/
 eval/results/
+experiments/llamaindex/results/
