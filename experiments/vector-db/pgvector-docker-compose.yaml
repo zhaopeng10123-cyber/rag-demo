@@ -1,0 +1,23 @@
+# 和 Milvus 的 compose 文件在同一目录，不单独起项目名的话会被当成同一个项目，互相当作孤儿容器
+name: rag-pgvector
+
+services:
+  pgvector:
+    container_name: rag-pgvector
+    image: pgvector/pgvector:0.8.7-pg17
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rag
+    ports:
+      - "5432:5432"
+    # 用命名卷而不是 ./volumes：Windows 目录挂进容器做 Postgres 数据目录会遇到权限问题
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
