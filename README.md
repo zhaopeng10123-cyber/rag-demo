@@ -1,5 +1,7 @@
 # rag-demo：从 RAG 链到 Function Calling Agent 与 LangGraph 状态图
 
+[![tests](https://github.com/zhaopeng10123-cyber/rag-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/zhaopeng10123-cyber/rag-demo/actions/workflows/ci.yml)
+
 > A hands-on Chinese RAG project built with LangChain 1.x and LangGraph. It starts from a plain LCEL RAG chain, then upgrades it to a function-calling agent (`create_agent`) and an explicit LangGraph state machine that routes each question to **retrieve / answer directly / refuse**, with relevance grading, query rewriting and an evaluation suite comparing all three.
 
 一个可以完整跑通、带评估的中文 RAG 学习项目。知识库是三篇 LLM 应用开发的技术笔记，覆盖 LangChain、LlamaIndex、RAG、Agent、SGLang、vLLM 等主题，放在 [`data/knowledge-base/`](data/knowledge-base/)。
@@ -21,7 +23,8 @@
 - **三类路由**：知识库相关的问题检索后回答；寒暄、问助手身份直接回答；库外问题和实时信息拒答
 - **检索后拒答**：图版本先判断检索到的资料是否相关，不相关就改写问题重试一次，仍然不相关才拒答
 - **多轮对话**：checkpointer 按 `thread_id` 保存历史，追问里的“它”由模型在调用 tool 时改写成完整问题
-- **评估**：检索指标（Hit Rate、MRR）、路由混淆矩阵、关键点覆盖率、拒答准确率、每题 LLM 调用次数和 token 成本
+- **评估**：检索指标（Hit Rate、MRR）、路由混淆矩阵、关键点覆盖率、拒答准确率、每题 LLM 调用次数和 token 成本，可选让 LLM 给答案的忠实度打分
+- **对照实验**：用 LlamaIndex 平行实现一遍，对比两个框架的检索和问答，并测试 bge-reranker 重排序和 sentence-window
 - **HTTP 接口**：FastAPI 把三种实现包成 SSE 流式接口，逐字推送答案和处理进度，按客户端限流并限制全局并发
 - **离线测试**：用剧本模型和假检索器覆盖状态图全部分支和 HTTP 接口，不需要 API Key
 
@@ -50,15 +53,24 @@ python check_env.py               # 确认 LLM 和 Embedding 都能调通
 python rag_chain.py "LCEL 是什么？"     # 单轮 RAG
 python chat.py                          # RAG 链多轮对话
 python agent_cli.py --mode graph        # LangGraph 状态图 Agent（或 --mode agent）
-python graph_agent.py --draw            # 导出状态图到 docs/
+python graph_agent.py --draw            # 导出状态图到 docs/（agent.py --draw 导出 create_agent 的图）
 ```
+
+`ingest.py` 默认读取 `.env` 里的切分参数，也可以用 `--chunk-size`、`--chunk-overlap`、`--collection` 临时指定，比如建一个单独的集合做实验。
 
 ## HTTP 接口（SSE 流式 + 限流）
 
 ```bash
 uvicorn api:app --host 127.0.0.1 --port 8000   # 接口文档：http://127.0.0.1:8000/docs
 python api_client.py                            # 命令行多轮对话客户端（--mode graph|agent|chain）
+python api_client.py --url http://host:8000 --api-key key1   # 连接其他地址，或服务端配置了 API_KEYS
 ```
+
+| 接口 | 说明 |
+|---|---|
+| `POST /chat/stream` | 流式问答，见下文 |
+| `DELETE /sessions/{session_id}` | 清空该会话在三种实现下的对话历史，返回 204 |
+| `GET /health` | 返回当前模型、可用模式、限流配置、并发上限和进行中的回答数 |
 
 `POST /chat/stream`，请求体 `{"question": "...", "session_id": "可选", "mode": "graph"}`，返回 `text/event-stream`：
 
@@ -83,7 +95,8 @@ curl -N http://127.0.0.1:8000/chat/stream -H "Content-Type: application/json" \
 | 状态码 | 触发条件 | 配置 |
 |---|---|---|
 | 429 | 单个客户端超过频率上限，响应带 `Retry-After` | `RATE_LIMIT=10/minute`（令牌桶，允许短时突发） |
-| 503 | 同时进行中的回答达到上限 | `MAX_CONCURRENT=4` |
+| 503 | 同时进行中的回答达到上限，响应带 `Retry-After: 5` | `MAX_CONCURRENT=4` |
+| 503 | 没有配置 LLM（`LLM_API_KEY` 为空或仍是示例值 `sk-xxx`） | `LLM_API_KEY` |
 | 409 | 同一会话的上一个问题还没回答完 | 无 |
 | 401 | 配置了 `API_KEYS` 但请求没带正确的 `X-API-Key` | `API_KEYS=key1,key2` |
 
@@ -93,10 +106,13 @@ curl -N http://127.0.0.1:8000/chat/stream -H "Content-Type: application/json" \
 
 ```bash
 python eval/evaluate.py --retrieval-only   # 只评检索，不需要 LLM
+python eval/evaluate.py --judge            # 额外让 LLM 给每个答案的忠实度打分
 python eval/evaluate.py --experiment       # 对比 chunk_size、k、检索指令
 python eval/evaluate_agent.py --mode all   # 对比 chain / agent / graph 三种实现
 python -m pytest tests -q                  # 离线测试
 ```
+
+`evaluate.py --k 3` 可以改变检索条数，`evaluate_agent.py --limit 5` 只跑前几题，适合调试时省 API 调用。结果保存在 `eval/results/`。
 
 评估集：[`eval/qa.jsonl`](eval/qa.jsonl) 有 17 题（15 道知识库题、2 道库外题），[`eval/qa_agent.jsonl`](eval/qa_agent.jsonl) 有 11 题（直答、库外、检索后拒答、多轮指代）。
 
