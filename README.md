@@ -25,6 +25,7 @@
 - **多轮对话**：checkpointer 按 `thread_id` 保存历史，追问里的“它”由模型在调用 tool 时改写成完整问题
 - **评估**：检索指标（Hit Rate、MRR）、路由混淆矩阵、关键点覆盖率、拒答准确率、每题 LLM 调用次数和 token 成本，可选让 LLM 给答案的忠实度打分
 - **对照实验**：用 LlamaIndex 平行实现一遍，对比两个框架的检索和问答，并测试 bge-reranker 重排序和 sentence-window
+- **向量库实操**：把同一批片段和向量灌进 Milvus 和 PgVector，跑通存、取、查和元数据过滤
 - **HTTP 接口**：FastAPI 把三种实现包成 SSE 流式接口，逐字推送答案和处理进度，按客户端限流并限制全局并发
 - **离线测试**：用剧本模型和假检索器覆盖状态图全部分支和 HTTP 接口，不需要 API Key
 
@@ -172,6 +173,10 @@ k=5 时所有配置都能全部召回；k=3 时，chunk_size 300 和 500 下检�
 
 结论：片段相同时两个框架的检索没有区别，差异来自切分方式和默认往向量里拼了什么；reranker 是唯一稳定的提升。sentence-window、问答对比，以及对齐时踩到的 9 个隐藏默认值，见[实验说明](experiments/llamaindex/README.md)。
 
+### Milvus / PgVector 实操
+
+[`experiments/vector-db/`](experiments/vector-db/) 用 Docker 启动 Milvus standalone 和 Postgres + pgvector，把主线 Chroma 里现成的片段和 bge 向量原样写进去，演示建 collection / 建表、按主键取、按元数据过滤、向量检索。`compare.py` 再检查两个库的 top-5 是否和暴力检索一致。不涉及评估和索引调参，HNSW、IVF 的取舍和踩坑点见[实操说明](experiments/vector-db/README.md)。
+
 ## 项目结构
 
 ```
@@ -191,7 +196,7 @@ download_model.py    从魔搭下载 Embedding 模型
 check_env.py         检查 LLM 和 Embedding 是否可用
 data/knowledge-base/ 知识库笔记（CC BY 4.0）
 eval/                评估集和评估脚本
-experiments/         对照实验（LlamaIndex 平行实现），不影响主线
+experiments/         对照实验（LlamaIndex 平行实现、Milvus / PgVector 实操），不影响主线
 tests/               离线测试（剧本模型 + 假检索器）
 docs/                导出的状态图
 ```

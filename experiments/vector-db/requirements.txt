@@ -1,0 +1,4 @@
+# 在主线 requirements.txt 的基础上再装这几个，实测不会改动主线已装的任何包（pymilvus 会额外带上 pandas）
+pymilvus==3.0.2
+psycopg[binary]==3.3.6
+pgvector==0.5.1
