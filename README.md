@@ -27,7 +27,8 @@
 - **对照实验**：用 LlamaIndex 平行实现一遍，对比两个框架的检索和问答，并测试 bge-reranker 重排序和 sentence-window
 - **向量库实操**：把同一批片段和向量灌进 Milvus 和 PgVector，跑通存、取、查和元数据过滤
 - **HTTP 接口**：FastAPI 把三种实现包成 SSE 流式接口，逐字推送答案和处理进度，按客户端限流并限制全局并发
-- **离线测试**：用剧本模型和假检索器覆盖状态图全部分支和 HTTP 接口，不需要 API Key
+- **MCP Server**：把检索和问答包成 MCP 工具，Inspector、Cursor、Claude Desktop 等客户端可以直接调用
+- **离线测试**：用剧本模型和假检索器覆盖状态图全部分支、HTTP 接口和 MCP 工具，不需要 API Key
 
 ## 快速开始
 
@@ -102,6 +103,57 @@ curl -N http://127.0.0.1:8000/chat/stream -H "Content-Type: application/json" \
 | 401 | 配置了 `API_KEYS` 但请求没带正确的 `X-API-Key` | `API_KEYS=key1,key2` |
 
 配置了 `API_KEYS` 时按密钥限流，否则按客户端 IP 限流。每个成功的响应都带 `X-RateLimit-Remaining` 头。限流状态和会话历史都存在进程内存里，所以只适合单进程部署；多 worker 或多实例部署时，需要换成 Redis 等共享存储。
+
+## MCP Server
+
+`mcp_server.py` 用 FastMCP 把知识库暴露成 MCP 工具，Inspector、Claude Desktop、Cursor 等任何 MCP 客户端都能直接调用：
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `search_knowledge(query, top_k=5)` | 工具 | 只做向量检索，返回 `{query, chunks: [{id, source, section, content}]}`，不调用 LLM。`top_k` 限定 1～10 |
+| `answer(question)` | 工具 | 走完整的 RAG 链（检索 + 生成 + 拒答），返回 `{answer, refused, sources}`；`refused` 为 true 表示知识库资料不足 |
+| `kb://topics` | 资源 | 知识库覆盖的主题和文档列表 |
+
+两个工具都标了只读（`readOnlyHint`），返回值有输出 schema（`structuredContent`）。工具说明是写给调用方模型看的：什么时候该用、什么时候不该用、返回字段的含义，以及"自己能作答时优先用 `search_knowledge`，避免 `answer` 里再调一次模型"。
+
+```bash
+mcp dev mcp_server.py                 # 打开 MCP Inspector：http://127.0.0.1:6274
+python mcp_server.py                  # stdio，供客户端以子进程启动
+python mcp_server.py --http           # Streamable HTTP：http://127.0.0.1:8001/mcp（8000 留给 api.py）
+python mcp_client_demo.py             # 以 MCP client 身份连上 server，和进程内 tool 对比
+```
+
+在 Inspector 里调用 `answer` 前，先把左侧 Configuration 里的 Request Timeout 调到 120 秒左右：一次 LLM 调用常常超过 10 秒，免费接口排队时可能要一分钟。server 启动时要先导入 torch 等库，从启动到能响应约 12 秒。
+
+在 Cursor 或 Claude Desktop 里使用，把下面的配置加进 MCP 配置文件（路径换成自己的）：
+
+```json
+{
+  "mcpServers": {
+    "rag-demo": {
+      "command": "D:/CV/rag-demo/.venv/Scripts/python.exe",
+      "args": ["D:/CV/rag-demo/mcp_server.py"]
+    }
+  }
+}
+```
+
+`.env` 由 `config.py` 按绝对路径读取，客户端从哪个目录启动 server 都没关系。
+
+**验证结果**：
+
+- 用 Inspector 的命令行模式，按 `mcp dev` 的启动方式（`uv run --with mcp mcp run mcp_server.py`）检查：工具列表能看到两个工具、只读标注和输出 schema；`search_knowledge` 返回 3 个 RadixAttention 相关片段；`answer` 对"什么是 LCEL？"给出带引用的答案；`kb://topics` 能读出主题和 3 篇文档。
+- 用 Python 的 stdio 客户端调用 `answer`："今天北京天气怎么样？"返回 `refused: true`。
+- `mcp_client_demo.py` 里，MCP 的 `search_knowledge` 和进程内 `search_knowledge_base` 返回的 5 个片段，来源、章节、正文逐字一致。
+- 把 MCP 工具交给 `create_agent` 回答"RadixAttention 是怎么复用 KV Cache 的？"：模型只凭工具说明就调用了 `search_knowledge`（`top_k=5`），给出带 `[3][5]` 引用的答案，共 2 次 LLM 调用、3715 tokens。
+
+踩到的坑：
+
+- **mcp 要停在 1.x**。mcp 2.x 把 `FastMCP` 改名成了 `MCPServer`；`langchain-mcp-adapters` 0.3.2 要求 `mcp<2`，而 0.3.1 没写上限，直接 `pip install mcp langchain-mcp-adapters` 会装上 mcp 2.x 加 adapters 0.3.1 这个不兼容的组合。
+- **Windows 上，stdio server 里首次导入 numpy、torch 会卡死**。server 有一个线程一直阻塞读 stdin，这时在任何线程里首次加载这类带 C 扩展的库，调用都会一直挂住；同样的代码在普通进程里 9 秒就跑完了。所以 `mcp_server.py` 在模块导入时（开始读 stdin 之前）就导入这些库，模型本身仍然按需加载，只要 0.2 秒。
+- **f-string 不能当 docstring**。工具说明里要插入知识库主题，写成 f-string 的话 `__doc__` 是空的，模型看到的工具说明也是空的，所以通过 `@mcp.tool(description=...)` 传入。
+- **stdio 模式下 stdout 是协议通道**，server 代码里不能 `print`。
+- **adapters 的 `client.get_tools()` 每次调用工具都会新起一个 server 进程**，每次多花约 12 秒的启动时间。`mcp_client_demo.py` 用 `client.session()` 加 `load_mcp_tools()`，所有调用共用一个进程。MCP 工具返回的结构化结果在 `ToolMessage.artifact["structured_content"]` 里。
 
 ## 评估
 
@@ -192,6 +244,8 @@ api.py               FastAPI 服务：SSE 流式接口、限流、会话管理
 streaming.py         三种实现的流式问答，统一输出 step / token / sources / done 事件
 ratelimit.py         令牌桶限流和并发上限
 api_client.py        SSE 命令行客户端
+mcp_server.py        MCP Server：search_knowledge、answer 两个工具和 kb://topics 资源
+mcp_client_demo.py   MCP client 示例：和进程内 tool 对比，再用 create_agent 调用 MCP 工具
 download_model.py    从魔搭下载 Embedding 模型
 check_env.py         检查 LLM 和 Embedding 是否可用
 data/knowledge-base/ 知识库笔记（CC BY 4.0）

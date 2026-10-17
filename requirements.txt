@@ -14,3 +14,7 @@ fastapi==0.143.1
 uvicorn==0.54.0
 httpx==0.28.1
 pytest==9.1.1
+# MCP server（mcp_server.py）和 client 示例（mcp_client_demo.py）。
+# mcp 停在 1.x：langchain-mcp-adapters 0.3.2 要求 mcp<2，而 0.3.1 没写上限，pip 会悄悄装上不兼容的组合
+mcp[cli]==1.30.0
+langchain-mcp-adapters==0.3.2
