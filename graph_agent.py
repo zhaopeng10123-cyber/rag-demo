@@ -18,6 +18,7 @@ from typing import Annotated, TypedDict
 
 import config
 import openai
+import tracing
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -169,9 +170,11 @@ def final_route(route: str, trace: list[str]) -> str:
     return "retrieve_refuse" if route == "retrieve" and trace and trace[-1] == "refuse" else route
 
 
-def ask(app, question: str, thread_id: str) -> AgentResult:
+def ask(app, question: str, thread_id: str, tags: list[str] | None = None) -> AgentResult:
     counter = CallCounter()
-    cfg = {"configurable": {"thread_id": thread_id}, "callbacks": [counter]}
+    trace_id = tracing.new_trace_id()
+    cfg = tracing.traced({"configurable": {"thread_id": thread_id}, "callbacks": [counter]}, "kb_graph_agent",
+                         trace_id=trace_id, session_id=thread_id, tags=["graph", *(tags or [])])
 
     start = time.perf_counter()
     trace, queries = [], []
@@ -185,7 +188,8 @@ def ask(app, question: str, thread_id: str) -> AgentResult:
     state = app.get_state(cfg).values
     route = final_route(state["route"], trace)
     return AgentResult(route=route, queries=queries, docs=state.get("docs", []), answer=state["answer"],
-                       trace=trace, llm_calls=counter.calls, tokens=counter.tokens, latency=latency)
+                       trace=trace, llm_calls=counter.calls, tokens=counter.tokens, latency=latency,
+                       trace_id=trace_id)
 
 
 def print_result(result: AgentResult) -> None:
@@ -194,6 +198,8 @@ def print_result(result: AgentResult) -> None:
     if result["docs"] and result["route"] == "retrieve":
         print_sources(result["docs"])
     print(f"（LLM 调用 {result['llm_calls']} 次，{result['tokens']} tokens，{result['latency']:.1f}s）")
+    if url := tracing.trace_url(result["trace_id"]):
+        print(f"（Langfuse：{url}）")
 
 
 def main() -> None:

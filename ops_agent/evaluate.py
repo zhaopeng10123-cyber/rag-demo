@@ -13,6 +13,7 @@ from pathlib import Path
 
 import config
 import openai
+import tracing
 
 from ops_agent.__main__ import progress
 from ops_agent.data import Case, load_cases
@@ -45,13 +46,23 @@ def score(case: Case, r: dict) -> dict:
         "llm_calls": r["llm_calls"], "tokens": r["tokens"], "latency": round(r["latency"], 1),
         "rounds": r["rounds"], "conclusion": r["conclusion"], "error": r["error"],
         "report": report.model_dump() if report else None,
+        "trace_id": r.get("trace_id"),
     }
 
 
-def run_case(app, case: Case, retries: int) -> dict:
+def write_scores(row: dict) -> None:
+    trace_id = row["trace_id"]
+    tracing.score(trace_id, "category_ok", row["category_ok"], comment=f"{row['expected']} -> {row['got']}")
+    tracing.score(trace_id, "scope_ok", row["scope_ok"])
+    tracing.score(trace_id, "evidence_recall", row["evidence_recall"],
+                  comment=f"缺证据 {row['missed_evidence']}" if row["missed_evidence"] else None)
+    tracing.score(trace_id, "tools_ok", row["tools_ok"])
+
+
+def run_case(app, case: Case, retries: int, run_id: str) -> dict:
     for attempt in range(retries + 1):
         try:
-            return ask(app, case, on_step=progress("    "))
+            return ask(app, case, on_step=progress("    "), session_id=run_id, tags=["eval"])
         except (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError) as e:
             if attempt == retries:
                 raise
@@ -78,11 +89,14 @@ def main() -> None:
     llm = config.get_llm()
     app = build_graph(llm)
     rows = []
+    # 一次评测的所有 trace 归到同一个 Langfuse 会话里
+    run_id = f"ops-eval-{time.strftime('%Y%m%d-%H%M%S')}"
     for i, cid in enumerate(ids):
         if i:
             time.sleep(args.pause)
         print(f"[{i + 1}/{len(ids)}] {cid} {cases[cid].alert.title}", flush=True)
-        row = score(cases[cid], run_case(app, cases[cid], args.retries))
+        row = score(cases[cid], run_case(app, cases[cid], args.retries, run_id))
+        write_scores(row)
         rows.append(row)
         print(f"  => {row['got']}（期望 {row['expected']}），证据 {row['evidence_recall']:.0%}，"
               f"{row['tool_rounds']} 轮 {row['tool_calls']} 次工具，{row['latency']}s", flush=True)
@@ -116,10 +130,14 @@ def main() -> None:
         "model": llm.model_name,
         "temperature": llm.temperature,
         "max_tool_rounds": MAX_TOOL_ROUNDS,
+        "langfuse_session": run_id if tracing.enabled() else None,
     }
     out.write_text(json.dumps({"meta": meta, "summary": summary, "rows": rows}, ensure_ascii=False, indent=2),
                    encoding="utf-8")
     print(f"\n模型 {meta['model']}，结果已保存到 {out}")
+    if tracing.enabled():
+        tracing.flush()
+        print(f"Langfuse 会话：{run_id}（trace 上带 category_ok / scope_ok / evidence_recall / tools_ok 分数）")
 
 
 if __name__ == "__main__":

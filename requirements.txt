@@ -18,3 +18,5 @@ pytest==9.1.1
 # mcp 停在 1.x：langchain-mcp-adapters 0.3.2 要求 mcp<2，而 0.3.1 没写上限，pip 会悄悄装上不兼容的组合
 mcp[cli]==1.30.0
 langchain-mcp-adapters==0.3.2
+# Langfuse 追踪（tracing.py），没配置 key 时不生效
+langfuse==5.0.2

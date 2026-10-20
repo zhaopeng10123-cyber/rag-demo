@@ -29,7 +29,8 @@
 - **HTTP 接口**：FastAPI 把三种实现包成 SSE 流式接口，逐字推送答案和处理进度，按客户端限流并限制全局并发
 - **MCP Server**：把检索和问答包成 MCP 工具，Inspector、Cursor、Claude Desktop 等客户端可以直接调用
 - **告警根因定位 Agent**：手写 ReAct 状态图 + 4 个诊断工具，在 7 个合成的云主机告警上定位根因，输出结构化报告并自动打分
-- **离线测试**：用剧本模型和假检索器覆盖状态图全部分支、HTTP 接口、MCP 工具和 ops_agent，不需要 API Key
+- **Langfuse 追踪**：所有入口的每个节点、LLM 调用、检索和工具调用都进同一条 trace，按会话、用户、模型筛选，评测分数写回 trace
+- **离线测试**：用剧本模型和假检索器覆盖状态图全部分支、HTTP 接口、MCP 工具、ops_agent 和追踪结构，不需要 API Key
 
 ## 快速开始
 
@@ -156,6 +157,34 @@ python mcp_client_demo.py             # 以 MCP client 身份连上 server，和
 - **stdio 模式下 stdout 是协议通道**，server 代码里不能 `print`。
 - **adapters 的 `client.get_tools()` 每次调用工具都会新起一个 server 进程**，每次多花约 12 秒的启动时间。`mcp_client_demo.py` 用 `client.session()` 加 `load_mcp_tools()`，所有调用共用一个进程。MCP 工具返回的结构化结果在 `ToolMessage.artifact["structured_content"]` 里。
 
+## Langfuse 全链路追踪
+
+`tracing.py` 把所有入口接到 [Langfuse](https://langfuse.com)：每次问答是一条 trace，状态图的每个节点、每次 LLM 调用（prompt、输出、token 用量、耗时）、检索结果、工具调用都按调用关系嵌套在里面。在 `.env` 里填上 Langfuse 项目的两个 key 就开启，不填时不生效，离线测试和 CI 也不受影响：
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+LANGFUSE_SECRET_KEY=sk-lf-xxx
+LANGFUSE_BASE_URL=https://cloud.langfuse.com   # 美国区用 https://us.cloud.langfuse.com
+```
+
+| 入口 | trace 名 | 会话（session） | 用户（user） | 标签 |
+|---|---|---|---|---|
+| `agent.py` / `graph_agent.py` / `agent_cli.py` | `kb_agent` / `kb_graph_agent` | 对话的 thread_id | | `agent` / `graph` |
+| `chat.py` | `chat` | 一次对话，`/clear` 后换新 | | `chain` |
+| `api.py` 三种模式 | `api.graph` / `api.agent` / `api.chain` | 请求里的 session_id | 客户端标识，API Key 只记哈希 | `api` |
+| `mcp_server.py` | `mcp.search_knowledge` / `mcp.answer` | | | `mcp` |
+| `python -m ops_agent` | `ops_agent` | 一次评测的 run id | | `ops_agent`、case id |
+
+所有 trace 都带上当前模型名作为标签，方便按模型筛选和对比。
+
+命令行入口在回答后打印 trace 链接；HTTP 接口在 `done` 事件里返回 `trace_id`。评测脚本还会把分数写回对应的 trace：`eval/evaluate_agent.py` 写路由、拒答、检索命中、关键点覆盖、指代改写是否正确；`python -m ops_agent.evaluate` 写根因类别、影响范围、证据召回、必需工具覆盖。这样在 Langfuse 里按分数筛出失败的 trace，就能直接看到模型当时拿到了什么、怎么推理的。
+
+实现上的几个取舍：
+
+- **trace id 提前生成**。chain 模式的改写、检索、作答是三次独立调用，传同一个 trace id 就归到同一条 trace；评测脚本也靠它写回分数。
+- **只用 LangChain 回调，不包 OpenTelemetry 上下文**。HTTP 接口的回答是异步生成器，跨 `yield` 维护上下文很容易出错；会话、用户、标签通过 config 的 metadata 传给回调。
+- **测试默认关闭追踪**。`tests/conftest.py` 设置了 `LANGFUSE_TRACING_ENABLED=false`，本地 `.env` 里有 key 也不会往外发；`tests/test_tracing.py` 把 span 导出到内存，检查 trace 的嵌套结构、会话和用户属性、API Key 是否被哈希。
+
 ## 告警根因定位 Agent（ops_agent）
 
 [`ops_agent/`](ops_agent/) 是一个独立的 LangGraph 练习：合成 7 个云主机告警 case（发布缺陷、配置错误、内存泄漏、下游数据库、可用区网络、定时备份、监控误报各一个，都带干扰项），给模型 4 个只读诊断工具（指标、变更、日志、同类主机对比），用手写的 ReAct 状态图让它自己排查，最后由单独的节点输出结构化根因报告，再和标准答案比对。
@@ -260,6 +289,7 @@ ratelimit.py         令牌桶限流和并发上限
 api_client.py        SSE 命令行客户端
 mcp_server.py        MCP Server：search_knowledge、answer 两个工具和 kb://topics 资源
 mcp_client_demo.py   MCP client 示例：和进程内 tool 对比，再用 create_agent 调用 MCP 工具
+tracing.py           Langfuse 追踪：给各入口的 config 加回调和会话、用户、标签，评测分数写回 trace
 download_model.py    从魔搭下载 Embedding 模型
 check_env.py         检查 LLM 和 Embedding 是否可用
 data/knowledge-base/ 知识库笔记（CC BY 4.0）

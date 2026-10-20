@@ -13,6 +13,7 @@ from typing import Literal
 
 import config
 import openai
+import tracing
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -107,12 +108,16 @@ def format_call(call: dict) -> str:
     return f"{call['name']}({args})"
 
 
-def ask(app, case: Case, on_step: Callable[[str], None] | None = None) -> dict:
+def ask(app, case: Case, on_step: Callable[[str], None] | None = None, session_id: str | None = None,
+        tags: list[str] | None = None) -> dict:
     """跑一个 case，返回报告、工具调用轨迹和成本。on_step 在每个节点结束时收到一行进度。"""
     counter = CallCounter()
     start = time.perf_counter()
     inputs = {"messages": [HumanMessage(alert_message(case))], "report": None, "error": ""}
-    cfg = {"callbacks": [counter], "recursion_limit": 4 * MAX_TOOL_ROUNDS + 10}
+    trace_id = tracing.new_trace_id()
+    cfg = tracing.traced({"callbacks": [counter], "recursion_limit": 4 * MAX_TOOL_ROUNDS + 10}, "ops_agent",
+                         trace_id=trace_id, session_id=session_id, tags=["ops_agent", case.id, *(tags or [])],
+                         metadata={"case_id": case.id, "alert": case.alert.title})
     state = inputs
     for mode, chunk in app.stream(inputs, cfg, context=OpsContext(case.id), stream_mode=["updates", "values"]):
         if mode == "values":
@@ -137,4 +142,5 @@ def ask(app, case: Case, on_step: Callable[[str], None] | None = None) -> dict:
         "llm_calls": counter.calls,
         "tokens": counter.tokens,
         "latency": latency,
+        "trace_id": trace_id,
     }

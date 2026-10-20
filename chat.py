@@ -2,7 +2,10 @@
 
 用法：python chat.py      命令：/clear 清空历史，/exit 退出
 """
+import uuid
+
 import config
+import tracing
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -29,6 +32,7 @@ def main() -> None:
     rewrite_chain = build_rewrite_chain(llm)
     answer_chain = build_answer_chain(llm)
     history: list[BaseMessage] = []
+    session_id = uuid.uuid4().hex
 
     print("知识库问答已启动。/clear 清空历史，/exit 退出。")
     while True:
@@ -42,24 +46,29 @@ def main() -> None:
             break
         if question == "/clear":
             history.clear()
+            session_id = uuid.uuid4().hex
             print("（历史已清空）")
             continue
 
+        trace_id = tracing.new_trace_id()
+        cfg = tracing.traced(None, "chat", trace_id=trace_id, session_id=session_id, tags=["chain"])
         # 没有历史时问题本身就是完整的，省一次 LLM 调用
         standalone = question
         if history:
-            standalone = rewrite_chain.invoke({"history": history, "question": question}).strip()
+            standalone = rewrite_chain.invoke({"history": history, "question": question}, cfg).strip()
             if standalone != question:
                 print(f"（检索问题改写为：{standalone}）")
 
-        docs = retriever.invoke(standalone)
+        docs = retriever.invoke(standalone, cfg)
         print("助手：", end="", flush=True)
         answer = ""
-        for token in answer_chain.stream({"context": format_docs(docs), "question": standalone}):
+        for token in answer_chain.stream({"context": format_docs(docs), "question": standalone}, cfg):
             print(token, end="", flush=True)
             answer += token
         print("\n")
         print_sources(docs)
+        if url := tracing.trace_url(trace_id):
+            print(f"（Langfuse：{url}）")
 
         history += [HumanMessage(question), AIMessage(answer)]
         history = history[-MAX_TURNS * 2:]
