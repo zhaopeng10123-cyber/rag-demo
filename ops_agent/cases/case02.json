@@ -1,0 +1,40 @@
+{
+  "id": "case02",
+  "alert": {
+    "host": "batch-02", "metric": "mem_usage", "value": 96.5, "threshold": 90,
+    "time": "2026-10-15T10:05:00",
+    "title": "batch-02 内存使用率 96.5%，超过 90%"
+  },
+  "hosts": [
+    {"name": "batch-01", "service": "report-service", "az": "az-b", "attrs": {"version": "v1.12.0", "role": "query"}},
+    {"name": "batch-02", "service": "report-service", "az": "az-b", "attrs": {"version": "v1.12.0", "role": "export"}},
+    {"name": "batch-03", "service": "report-service", "az": "az-b", "attrs": {"version": "v1.12.0", "role": "query"}},
+    {"name": "mq-02", "service": "kafka", "az": "az-b", "attrs": {"version": "3.7.1"}}
+  ],
+  "metrics": {
+    "batch-02": {
+      "mem_usage": {"base": 40, "events": [{"type": "sawtooth", "start": -4199, "period": 600, "value": 97.5}]}
+    }
+  },
+  "changes": [
+    {"minutes_ago": 3000, "target": "report-service", "hosts": ["batch-01", "batch-02", "batch-03"], "type": "发布",
+     "desc": "report-service v1.11.4 → v1.12.0，新增报表模板", "operator": "zhaoliu"}
+  ],
+  "logs": {
+    "batch-02": [
+      {"minutes_ago": 599, "level": "ERROR", "msg": "kernel: Out of memory: Killed process 23817 (java) total-vm:8123456kB, anon-rss:6012345kB", "count": 1},
+      {"minutes_ago": 598, "level": "INFO", "msg": "report-service started (pid 24410)", "count": 1},
+      {"minutes_ago": 1199, "level": "ERROR", "msg": "kernel: Out of memory: Killed process 19022 (java) total-vm:8120112kB, anon-rss:6009871kB", "count": 1},
+      {"minutes_ago": 1799, "level": "ERROR", "msg": "kernel: Out of memory: Killed process 14530 (java) total-vm:8119876kB, anon-rss:6011020kB", "count": 1},
+      {"minutes_ago": 20, "level": "WARN", "msg": "ExportTask heap usage 92%, ExportCache entries=1,284,331（任务结束后未清理）", "count": 12},
+      {"minutes_ago": 15, "level": "INFO", "msg": "export job finished: daily_sales.xlsx", "count": 200}
+    ]
+  },
+  "answer": {
+    "category": "resource_leak",
+    "scope": "single_host",
+    "evidence": ["OOM|Out of memory|内存溢出", "ExportCache|ExportTask|导出|缓存"],
+    "required_tools": ["query_metrics", "search_logs"],
+    "summary": "只有承担导出任务的 batch-02 内存呈锯齿状上涨，每 10 小时左右被 OOM killer 杀一次；ExportCache 在任务结束后没有清理。50 小时前的发布三台都升级了，另外两台正常，不是原因"
+  }
+}

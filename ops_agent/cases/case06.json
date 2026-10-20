@@ -1,0 +1,37 @@
+{
+  "id": "case06",
+  "alert": {
+    "host": "pg-03", "metric": "disk_io_util", "value": 98.1, "threshold": 90,
+    "time": "2026-10-19T02:12:00",
+    "title": "pg-03 磁盘 IO 利用率 98.1%，超过 90%"
+  },
+  "hosts": [
+    {"name": "pg-01", "service": "report-db", "az": "az-a", "attrs": {"role": "primary", "version": "PostgreSQL 16.4"}},
+    {"name": "pg-02", "service": "report-db", "az": "az-b", "attrs": {"role": "replica", "version": "PostgreSQL 16.4"}},
+    {"name": "pg-03", "service": "report-db", "az": "az-b", "attrs": {"role": "replica", "version": "PostgreSQL 16.4"}}
+  ],
+  "metrics": {
+    "pg-03": {
+      "disk_io_util": {"events": [{"type": "daily", "at": "02:00", "duration": 45, "value": 97, "noise": 1}]},
+      "cpu_usage": {"events": [{"type": "daily", "at": "02:00", "duration": 45, "value": 48}]}
+    }
+  },
+  "changes": [],
+  "logs": {
+    "pg-03": [
+      {"minutes_ago": 12, "level": "INFO", "msg": "pg_basebackup: base backup started (cron: 0 2 * * *)", "count": 1},
+      {"minutes_ago": 1452, "level": "INFO", "msg": "pg_basebackup: base backup started (cron: 0 2 * * *)", "count": 1},
+      {"minutes_ago": 1410, "level": "INFO", "msg": "pg_basebackup: base backup completed, 182 GB", "count": 1},
+      {"minutes_ago": 2892, "level": "INFO", "msg": "pg_basebackup: base backup started (cron: 0 2 * * *)", "count": 1},
+      {"minutes_ago": 2850, "level": "INFO", "msg": "pg_basebackup: base backup completed, 181 GB", "count": 1},
+      {"minutes_ago": 10, "level": "WARN", "msg": "checkpoint taking longer than usual (wrote 18% of buffers)", "count": 4}
+    ]
+  },
+  "answer": {
+    "category": "planned_load",
+    "scope": "single_host",
+    "evidence": ["备份|backup|basebackup", "02:00|每天|每日|cron|凌晨两点|定时"],
+    "required_tools": ["query_metrics", "search_logs"],
+    "summary": "pg-03 每天 02:00 跑 pg_basebackup 全量备份，过去三天同一时段都出现 45 分钟左右的 IO 峰值，属于计划内负载；可以考虑调整阈值或备份时段，不需要故障处理"
+  }
+}

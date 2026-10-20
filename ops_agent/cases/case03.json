@@ -1,0 +1,41 @@
+{
+  "id": "case03",
+  "alert": {
+    "host": "log-02", "metric": "disk_usage", "value": 95.3, "threshold": 90,
+    "time": "2026-10-16T09:30:00",
+    "title": "log-02 根分区磁盘使用率 95.3%，超过 90%"
+  },
+  "hosts": [
+    {"name": "log-01", "service": "log-collector", "az": "az-a", "attrs": {"version": "v3.4.2"}},
+    {"name": "log-02", "service": "log-collector", "az": "az-a", "attrs": {"version": "v3.4.2"}},
+    {"name": "log-03", "service": "log-collector", "az": "az-b", "attrs": {"version": "v3.4.2"}},
+    {"name": "log-04", "service": "log-collector", "az": "az-b", "attrs": {"version": "v3.4.2"}},
+    {"name": "es-01", "service": "elasticsearch", "az": "az-a", "attrs": {"version": "8.15.3"}}
+  ],
+  "metrics": {
+    "log-01": {"disk_usage": {"events": [{"type": "ramp", "start": -2870, "value": 88}]}},
+    "log-02": {"disk_usage": {"events": [{"type": "ramp", "start": -2870, "value": 95}]}},
+    "log-03": {"disk_usage": {"events": [{"type": "ramp", "start": -2870, "value": 86}]}},
+    "log-04": {"disk_usage": {"events": [{"type": "ramp", "start": -2870, "value": 84}]}}
+  },
+  "changes": [
+    {"minutes_ago": 2880, "target": "log-collector", "hosts": ["log-01", "log-02", "log-03", "log-04"], "type": "配置变更",
+     "desc": "logrotate 配置调整：/data/logs/*.log 保留天数 rotate 7 → 90，关闭 compress", "operator": "lisi"},
+    {"minutes_ago": 600, "target": "log-collector", "hosts": ["log-01", "log-02", "log-03", "log-04"], "type": "发布",
+     "desc": "log-collector v3.4.1 → v3.4.2，修复 JSON 字段解析", "operator": "lisi"}
+  ],
+  "logs": {
+    "log-02": [
+      {"minutes_ago": 10, "level": "WARN", "msg": "kafka consumer lag 12000 on topic app-logs", "count": 800},
+      {"minutes_ago": 15, "level": "WARN", "msg": "disk usage high on /: 95%", "count": 5},
+      {"minutes_ago": 60, "level": "INFO", "msg": "logrotate: rotated /data/logs/collector.log (keep 90, compress=no)", "count": 1}
+    ]
+  },
+  "answer": {
+    "category": "config_change",
+    "scope": "whole_service",
+    "evidence": ["logrotate|保留天数|rotate|日志轮转"],
+    "required_tools": ["list_changes", "compare_peers"],
+    "summary": "48 小时前 logrotate 保留天数从 7 改成 90 并关闭压缩，四台 log-collector 磁盘都从那时开始线性上涨，log-02 写入量最大最先告警；10 小时前的发布和 kafka lag 都不是原因"
+  }
+}

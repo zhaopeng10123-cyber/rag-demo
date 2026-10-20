@@ -1,0 +1,59 @@
+{
+  "id": "case04",
+  "alert": {
+    "host": "pay-02", "metric": "net_latency_ms", "value": 38.5, "threshold": 10,
+    "time": "2026-10-17T21:15:00",
+    "title": "pay-02 网络延迟 38.5ms，超过 10ms"
+  },
+  "hosts": [
+    {"name": "pay-01", "service": "pay-api", "az": "az-b", "attrs": {"version": "v5.1.0"}},
+    {"name": "pay-02", "service": "pay-api", "az": "az-c", "attrs": {"version": "v5.1.0"}},
+    {"name": "pay-03", "service": "pay-api", "az": "az-c", "attrs": {"version": "v5.1.0"}},
+    {"name": "pay-04", "service": "pay-api", "az": "az-b", "attrs": {"version": "v5.1.0"}},
+    {"name": "user-04", "service": "user-api", "az": "az-c", "attrs": {"version": "v1.8.7"}},
+    {"name": "search-02", "service": "search-api", "az": "az-c", "attrs": {"version": "v4.2.0"}},
+    {"name": "cache-05", "service": "session-cache", "az": "az-c", "attrs": {"version": "7.2.5"}}
+  ],
+  "metrics": {
+    "pay-02": {
+      "net_latency_ms": {"events": [{"type": "step", "start": -25, "value": 38, "noise": 3}]},
+      "packet_loss": {"events": [{"type": "step", "start": -25, "value": 4.2, "noise": 0.5}]},
+      "http_p99_ms": {"events": [{"type": "step", "start": -25, "value": 1350}]}
+    },
+    "pay-03": {
+      "net_latency_ms": {"events": [{"type": "step", "start": -25, "value": 41, "noise": 3}]},
+      "packet_loss": {"events": [{"type": "step", "start": -25, "value": 5.1, "noise": 0.5}]},
+      "http_p99_ms": {"events": [{"type": "step", "start": -25, "value": 1420}]}
+    },
+    "user-04": {
+      "net_latency_ms": {"events": [{"type": "step", "start": -25, "value": 36, "noise": 3}]},
+      "packet_loss": {"events": [{"type": "step", "start": -25, "value": 3.8, "noise": 0.5}]}
+    },
+    "search-02": {
+      "net_latency_ms": {"events": [{"type": "step", "start": -25, "value": 44, "noise": 3}]},
+      "packet_loss": {"events": [{"type": "step", "start": -25, "value": 6.0, "noise": 0.5}]}
+    },
+    "cache-05": {
+      "net_latency_ms": {"events": [{"type": "step", "start": -25, "value": 39, "noise": 3}]},
+      "packet_loss": {"events": [{"type": "step", "start": -25, "value": 4.5, "noise": 0.5}]}
+    }
+  },
+  "changes": [
+    {"minutes_ago": 180, "target": "pay-api", "hosts": ["pay-01", "pay-02", "pay-03", "pay-04"], "type": "安全组变更",
+     "desc": "放通 10.2.0.0/16 访问 pay-api 8443 端口", "operator": "secops"}
+  ],
+  "logs": {
+    "pay-02": [
+      {"minutes_ago": 20, "level": "ERROR", "msg": "connection reset by peer: upstream user-api (10.3.4.21:8080)", "count": 230},
+      {"minutes_ago": 18, "level": "WARN", "msg": "retrying request to risk-service (attempt 3/3)", "count": 150},
+      {"minutes_ago": 22, "level": "WARN", "msg": "TCP retransmission rate 4.8%", "count": 40}
+    ]
+  },
+  "answer": {
+    "category": "infrastructure",
+    "scope": "whole_az",
+    "evidence": ["az-c", "user-04|search-02|cache-05|其他服务|不同服务"],
+    "required_tools": ["compare_peers"],
+    "summary": "az-c 里不同服务的主机（pay-02、pay-03、user-04、search-02、cache-05）同时出现延迟和丢包，az-b 的 pay-api 正常，是可用区网络故障；安全组变更三小时前就下发到全部 pay-api，az-b 不受影响，日志里的 connection reset 是结果不是原因"
+  }
+}

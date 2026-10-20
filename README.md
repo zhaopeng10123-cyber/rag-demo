@@ -28,7 +28,8 @@
 - **向量库实操**：把同一批片段和向量灌进 Milvus 和 PgVector，跑通存、取、查和元数据过滤
 - **HTTP 接口**：FastAPI 把三种实现包成 SSE 流式接口，逐字推送答案和处理进度，按客户端限流并限制全局并发
 - **MCP Server**：把检索和问答包成 MCP 工具，Inspector、Cursor、Claude Desktop 等客户端可以直接调用
-- **离线测试**：用剧本模型和假检索器覆盖状态图全部分支、HTTP 接口和 MCP 工具，不需要 API Key
+- **告警根因定位 Agent**：手写 ReAct 状态图 + 4 个诊断工具，在 7 个合成的云主机告警上定位根因，输出结构化报告并自动打分
+- **离线测试**：用剧本模型和假检索器覆盖状态图全部分支、HTTP 接口、MCP 工具和 ops_agent，不需要 API Key
 
 ## 快速开始
 
@@ -155,6 +156,19 @@ python mcp_client_demo.py             # 以 MCP client 身份连上 server，和
 - **stdio 模式下 stdout 是协议通道**，server 代码里不能 `print`。
 - **adapters 的 `client.get_tools()` 每次调用工具都会新起一个 server 进程**，每次多花约 12 秒的启动时间。`mcp_client_demo.py` 用 `client.session()` 加 `load_mcp_tools()`，所有调用共用一个进程。MCP 工具返回的结构化结果在 `ToolMessage.artifact["structured_content"]` 里。
 
+## 告警根因定位 Agent（ops_agent）
+
+[`ops_agent/`](ops_agent/) 是一个独立的 LangGraph 练习：合成 7 个云主机告警 case（发布缺陷、配置错误、内存泄漏、下游数据库、可用区网络、定时备份、监控误报各一个，都带干扰项），给模型 4 个只读诊断工具（指标、变更、日志、同类主机对比），用手写的 ReAct 状态图让它自己排查，最后由单独的节点输出结构化根因报告，再和标准答案比对。
+
+```bash
+python -m ops_agent --case case01     # 跑一个 case，实时打印每轮调用的工具
+python -m ops_agent.evaluate          # 跑全部 case 并打分
+```
+
+![ops_agent 状态图](docs/ops_agent.png)
+
+用 Qwen3-8B 跑了两轮：必需工具都调用到了，case05 还会顺着日志去查数据库的变更；但根因类别准确率只有 43%~71%，影响范围 29%~57%，两轮之间波动很大。错误主要出在读工具输出和下结论两步。数据生成方式、工具设计、评估指标和逐个 case 的失败分析见 [ops_agent 说明](ops_agent/README.md)。
+
 ## 评估
 
 ```bash
@@ -250,6 +264,7 @@ download_model.py    从魔搭下载 Embedding 模型
 check_env.py         检查 LLM 和 Embedding 是否可用
 data/knowledge-base/ 知识库笔记（CC BY 4.0）
 eval/                评估集和评估脚本
+ops_agent/           告警根因定位 Agent：合成 case、诊断工具、ReAct 状态图、评估
 experiments/         对照实验（LlamaIndex 平行实现、Milvus / PgVector 实操），不影响主线
 tests/               离线测试（剧本模型 + 假检索器）
 docs/                导出的状态图
