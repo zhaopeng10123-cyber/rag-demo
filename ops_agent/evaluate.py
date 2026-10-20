@@ -16,7 +16,7 @@ import openai
 
 from ops_agent.__main__ import progress
 from ops_agent.data import Case, load_cases
-from ops_agent.graph import ask, build_graph
+from ops_agent.graph import MAX_TOOL_ROUNDS, ask, build_graph
 
 RESULTS_DIR = Path(__file__).parent / "results"
 
@@ -75,7 +75,8 @@ def main() -> None:
 
     cases = load_cases()
     ids = args.case or list(cases)
-    app = build_graph(config.get_llm())
+    llm = config.get_llm()
+    app = build_graph(llm)
     rows = []
     for i, cid in enumerate(ids):
         if i:
@@ -111,8 +112,14 @@ def main() -> None:
 
     RESULTS_DIR.mkdir(exist_ok=True)
     out = RESULTS_DIR / f"eval-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    out.write_text(json.dumps({"summary": summary, "rows": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n结果已保存到 {out}")
+    meta = {
+        "model": llm.model_name,
+        "temperature": llm.temperature,
+        "max_tool_rounds": MAX_TOOL_ROUNDS,
+    }
+    out.write_text(json.dumps({"meta": meta, "summary": summary, "rows": rows}, ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    print(f"\n模型 {meta['model']}，结果已保存到 {out}")
 
 
 if __name__ == "__main__":
