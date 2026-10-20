@@ -14,6 +14,7 @@ import agent as agent_impl
 import config
 import graph_agent
 import tools
+import tracing
 from chat import MAX_TURNS, build_rewrite_chain
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
 from rag_chain import build_answer_chain, format_docs
@@ -30,9 +31,19 @@ def sources_payload(docs) -> list[dict]:
             for i, d in enumerate(docs, 1)]
 
 
-def done_payload(route: str, answer: str, queries: list[str], counter: CallCounter, start: float) -> dict:
+def done_payload(route: str, answer: str, queries: list[str], counter: CallCounter, start: float,
+                 trace_id: str | None) -> dict:
     return {"route": route, "answer": answer, "queries": queries, "llm_calls": counter.calls,
-            "tokens": counter.tokens, "latency": round(time.perf_counter() - start, 2)}
+            "tokens": counter.tokens, "latency": round(time.perf_counter() - start, 2), "trace_id": trace_id}
+
+
+def stream_config(name: str, session_id: str, user_id: str | None, counter: CallCounter,
+                  thread: bool = True) -> tuple[dict, str | None]:
+    trace_id = tracing.new_trace_id()
+    cfg = {"configurable": {"thread_id": session_id}} if thread else {}
+    cfg = tracing.traced({**cfg, "callbacks": [counter]}, name, trace_id=trace_id, session_id=session_id,
+                         user_id=user_id, tags=["api"])
+    return cfg, trace_id
 
 
 def answer_token(msg: Any, meta: dict, nodes: set[str]) -> str:
@@ -46,9 +57,9 @@ class GraphBackend:
     def __init__(self, llm) -> None:
         self.app = graph_agent.build_graph(llm=llm)
 
-    async def stream(self, question: str, session_id: str) -> AsyncIterator[Event]:
+    async def stream(self, question: str, session_id: str, user_id: str | None = None) -> AsyncIterator[Event]:
         counter = CallCounter()
-        cfg = {"configurable": {"thread_id": session_id}, "callbacks": [counter]}
+        cfg, trace_id = stream_config("api.graph", session_id, user_id, counter)
         start = time.perf_counter()
         trace, queries, streamed = [], [], False
 
@@ -72,7 +83,7 @@ class GraphBackend:
         route = graph_agent.final_route(state["route"], trace)
         if route == "retrieve":
             yield "sources", {"sources": sources_payload(state["docs"])}
-        yield "done", done_payload(route, state["answer"], queries, counter, start)
+        yield "done", done_payload(route, state["answer"], queries, counter, start, trace_id)
 
     def clear(self, session_id: str) -> None:
         self.app.checkpointer.delete_thread(session_id)
@@ -82,9 +93,9 @@ class AgentBackend:
     def __init__(self, llm) -> None:
         self.agent = agent_impl.build_agent(llm=llm)
 
-    async def stream(self, question: str, session_id: str) -> AsyncIterator[Event]:
+    async def stream(self, question: str, session_id: str, user_id: str | None = None) -> AsyncIterator[Event]:
         counter = CallCounter()
-        cfg = {"configurable": {"thread_id": session_id}, "callbacks": [counter]}
+        cfg, trace_id = stream_config("api.agent", session_id, user_id, counter)
         start = time.perf_counter()
         queries, docs, answer, streamed = [], [], "", False
 
@@ -115,7 +126,7 @@ class AgentBackend:
         route = agent_impl.infer_route(queries, answer)
         if route == "retrieve" and docs:
             yield "sources", {"sources": sources_payload(docs)}
-        yield "done", done_payload(route, answer, queries, counter, start)
+        yield "done", done_payload(route, answer, queries, counter, start, trace_id)
 
     def clear(self, session_id: str) -> None:
         self.agent.checkpointer.delete_thread(session_id)
@@ -129,9 +140,10 @@ class ChainBackend:
         self.answer_chain = build_answer_chain(llm)
         self.histories: dict[str, list[BaseMessage]] = {}
 
-    async def stream(self, question: str, session_id: str) -> AsyncIterator[Event]:
+    async def stream(self, question: str, session_id: str, user_id: str | None = None) -> AsyncIterator[Event]:
         counter = CallCounter()
-        cfg = {"callbacks": [counter]}
+        # 改写、检索、作答是三次独立调用，靠同一个 trace id 归到一条 trace 下
+        cfg, trace_id = stream_config("api.chain", session_id, user_id, counter, thread=False)
         start = time.perf_counter()
         history = self.histories.get(session_id, [])
 
@@ -140,7 +152,7 @@ class ChainBackend:
             standalone = (await self.rewrite_chain.ainvoke({"history": history, "question": question}, cfg)).strip()
             standalone = standalone or question
             yield "step", {"node": "rewrite", "detail": f"rewrite({standalone})"}
-        docs = await tools._get_retriever().ainvoke(standalone)
+        docs = await tools._get_retriever().ainvoke(standalone, cfg)
         yield "step", {"node": "retrieve", "detail": f"retrieve({len(docs)} 个片段)"}
 
         answer = ""
@@ -152,7 +164,7 @@ class ChainBackend:
         route = "retrieve_refuse" if is_refusal(answer) else "retrieve"
         if route == "retrieve":
             yield "sources", {"sources": sources_payload(docs)}
-        yield "done", done_payload(route, answer, [standalone], counter, start)
+        yield "done", done_payload(route, answer, [standalone], counter, start, trace_id)
 
     def clear(self, session_id: str) -> None:
         self.histories.pop(session_id, None)

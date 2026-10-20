@@ -21,6 +21,7 @@ sys.path[:0] = [str(EVAL_DIR.parent), str(EVAL_DIR)]
 import openai  # noqa: E402
 
 import config  # noqa: E402
+import tracing  # noqa: E402
 from chat import build_rewrite_chain  # noqa: E402
 from evaluate import RESULTS_DIR, first_hit_rank, key_point_coverage, load_qa, retrieval_metrics  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
@@ -42,18 +43,20 @@ class ChainRunner:
 
     def __call__(self, question: str, thread_id: str) -> AgentResult:
         counter = CallCounter()
-        cfg = {"callbacks": [counter]}
+        trace_id = tracing.new_trace_id()
+        cfg = tracing.traced({"callbacks": [counter]}, "kb_chain", trace_id=trace_id, session_id=thread_id,
+                             tags=["chain", "eval"])
         history = self.histories.setdefault(thread_id, [])
         start = time.perf_counter()
         query = question
         if history:
             query = self.rewrite_chain.invoke({"history": history, "question": question}, cfg).strip()
-        docs = self.retriever.invoke(query)
+        docs = self.retriever.invoke(query, cfg)
         answer = self.answer_chain.invoke({"context": format_docs(docs), "question": query}, cfg)
         history += [HumanMessage(question), AIMessage(answer)]
         return AgentResult(route="retrieve_refuse" if is_refusal(answer) else "retrieve", queries=[query],
                            docs=docs, answer=answer, trace=["retrieve", "generate"], llm_calls=counter.calls,
-                           tokens=counter.tokens, latency=time.perf_counter() - start)
+                           tokens=counter.tokens, latency=time.perf_counter() - start, trace_id=trace_id)
 
 
 def build_runner(mode: str, llm):
@@ -62,10 +65,10 @@ def build_runner(mode: str, llm):
     if mode == "agent":
         import agent
         app = agent.build_agent(llm=llm)
-        return lambda q, tid: agent.ask(app, q, tid)
+        return lambda q, tid: agent.ask(app, q, tid, tags=["eval"])
     import graph_agent
     app = graph_agent.build_graph(llm=llm)
-    return lambda q, tid: graph_agent.ask(app, q, tid)
+    return lambda q, tid: graph_agent.ask(app, q, tid, tags=["eval"])
 
 
 def load_items(limit: int | None) -> list[dict]:
@@ -106,9 +109,23 @@ def evaluate_mode(mode: str, items: list[dict], llm) -> dict:
         if item.get("query_must_contain"):
             row["rewrite_ok"] = any(all(t.lower() in q.lower() for t in item["query_must_contain"])
                                     for q in r["queries"])
+        row["trace_id"] = r["trace_id"]
+        write_scores(row)
         rows.append(row)
     print()
     return {"mode": mode, "summary": summarize(rows), "rows": rows}
+
+
+def write_scores(row: dict) -> None:
+    trace_id = row["trace_id"]
+    tracing.score(trace_id, "route_ok", row["route_ok"], comment=f"{row['expected_route']} -> {row['route']}")
+    tracing.score(trace_id, "refusal_ok", row["refusal_ok"])
+    if "rank" in row:
+        tracing.score(trace_id, "retrieval_hit", row["rank"] is not None)
+        tracing.score(trace_id, "key_point_coverage", row["coverage"],
+                      comment=f"缺少 {row['missed']}" if row["missed"] else None)
+    if "rewrite_ok" in row:
+        tracing.score(trace_id, "rewrite_ok", row["rewrite_ok"])
 
 
 def summarize(rows: list[dict]) -> dict:
@@ -196,6 +213,7 @@ def main() -> None:
     out = RESULTS_DIR / f"agent-{args.mode}-{time.strftime('%Y%m%d-%H%M%S')}.json"
     out.write_text(json.dumps(results, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print(f"\n结果已保存到 {out}")
+    tracing.flush()
 
 
 if __name__ == "__main__":

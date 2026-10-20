@@ -8,6 +8,8 @@ import argparse
 import time
 from collections.abc import Callable
 
+import tracing
+
 from ops_agent.data import CATEGORY_NAMES, SCOPE_NAMES, load_cases
 
 
@@ -29,6 +31,8 @@ def print_result(result: dict, case) -> None:
     answer = case.answer
     print(f"\n参考答案：{CATEGORY_NAMES[answer.category]} / {SCOPE_NAMES[answer.scope]}。{answer.summary}")
     print(f"（LLM 调用 {result['llm_calls']} 次，{result['tokens']} tokens，{result['latency']:.1f}s）")
+    if url := tracing.trace_url(result["trace_id"]):
+        print(f"（Langfuse：{url}）")
 
 
 def main() -> None:

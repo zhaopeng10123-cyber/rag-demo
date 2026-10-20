@@ -12,6 +12,7 @@ import time
 import uuid
 
 import config
+import tracing
 from langchain.agents import create_agent
 from langchain.agents.middleware import ToolCallLimitMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -42,9 +43,11 @@ def infer_route(queries: list[str], answer: str) -> str:
     return "refuse" if refused else "direct"
 
 
-def ask(agent, question: str, thread_id: str) -> AgentResult:
+def ask(agent, question: str, thread_id: str, tags: list[str] | None = None) -> AgentResult:
     counter = CallCounter()
-    cfg = {"configurable": {"thread_id": thread_id}, "callbacks": [counter]}
+    trace_id = tracing.new_trace_id()
+    cfg = tracing.traced({"configurable": {"thread_id": thread_id}, "callbacks": [counter]}, "kb_agent",
+                         trace_id=trace_id, session_id=thread_id, tags=["agent", *(tags or [])])
     before = len(agent.get_state(cfg).values.get("messages", []))
 
     start = time.perf_counter()
@@ -67,7 +70,7 @@ def ask(agent, question: str, thread_id: str) -> AgentResult:
 
     answer = state["messages"][-1].text
     return AgentResult(route=infer_route(queries, answer), queries=queries, docs=docs, answer=answer, trace=trace,
-                       llm_calls=counter.calls, tokens=counter.tokens, latency=latency)
+                       llm_calls=counter.calls, tokens=counter.tokens, latency=latency, trace_id=trace_id)
 
 
 def print_result(result: AgentResult) -> None:
@@ -76,6 +79,8 @@ def print_result(result: AgentResult) -> None:
     if result["docs"]:
         print_sources(result["docs"])
     print(f"（LLM 调用 {result['llm_calls']} 次，{result['tokens']} tokens，{result['latency']:.1f}s）")
+    if url := tracing.trace_url(result["trace_id"]):
+        print(f"（Langfuse：{url}）")
 
 
 def main() -> None:

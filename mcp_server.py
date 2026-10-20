@@ -25,6 +25,7 @@ import langchain_chroma  # noqa: F401
 import langchain_huggingface  # noqa: F401
 import langchain_openai  # noqa: F401
 import sentence_transformers  # noqa: F401
+import tracing
 from langchain_core.documents import Document
 from langchain_core.runnables import Runnable, RunnableLambda
 from mcp.server.fastmcp import FastMCP
@@ -117,7 +118,9 @@ async def search_knowledge(
                                             "例如“RadixAttention 是怎么复用 KV Cache 的”，不要只写“它怎么复用”")],
     top_k: Annotated[int, Field(ge=1, le=10, description="返回的片段数")] = config.TOP_K,
 ) -> SearchResult:
-    docs = await anyio.to_thread.run_sync(search_docs, query, top_k)
+    search = RunnableLambda(lambda q: search_docs(q, top_k), name="search_docs")
+    cfg = tracing.traced(None, "mcp.search_knowledge", tags=["mcp"], metadata={"top_k": top_k})
+    docs = await anyio.to_thread.run_sync(search.invoke, query, cfg)
     return SearchResult(query=query, chunks=to_chunks(docs))
 
 
@@ -126,7 +129,8 @@ async def answer(
     question: Annotated[str, Field(min_length=1, max_length=1000,
                                    description="用户的完整中文问题，脱离对话上下文也能看懂")],
 ) -> Answer:
-    result = await anyio.to_thread.run_sync(_rag_chain().invoke, question)
+    cfg = tracing.traced(None, "mcp.answer", tags=["mcp"])
+    result = await anyio.to_thread.run_sync(_rag_chain().invoke, question, cfg)
     sources = [Source(id=c.id, source=c.source, section=c.section) for c in to_chunks(result["docs"])]
     text = result["answer"].strip()
     return Answer(answer=text, refused=is_refusal(text), sources=sources)

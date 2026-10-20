@@ -19,6 +19,7 @@ from typing import Literal
 
 import config
 import openai
+import tracing
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, Field
@@ -105,13 +106,14 @@ def create_app(llm=None, rate_limit: str | None = None, max_concurrent: int | No
     @app.post("/chat/stream", response_class=EventSourceResponse, summary="流式问答（SSE）",
               responses={429: {"description": "请求太频繁"}, 409: {"description": "会话忙"},
                          503: {"description": "服务繁忙或未配置 LLM"}})
-    async def chat_stream(req: ChatRequest, backend=Depends(backend_for),
-                          session_id: str = Depends(stream_slot)) -> AsyncIterator[ServerSentEvent]:
+    async def chat_stream(req: ChatRequest, backend=Depends(backend_for), session_id: str = Depends(stream_slot),
+                          client: str = Depends(rate_limited)) -> AsyncIterator[ServerSentEvent]:
         """事件依次为 session、step*、token*、sources?、done；出错时以 error 事件结束。"""
         yield sse("session", {"session_id": session_id, "mode": req.mode})
         start, first_token = time.perf_counter(), None
         try:
-            async for event, data in backend.stream(req.question, session_id):
+            # 同一请求内的依赖有缓存，rate_limited 不会因为这里再声明一次而多扣令牌
+            async for event, data in backend.stream(req.question, session_id, tracing.anonymize(client)):
                 if event == "token" and first_token is None:
                     first_token = time.perf_counter() - start
                 if event == "done":

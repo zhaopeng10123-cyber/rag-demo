@@ -76,6 +76,7 @@ class AgentResult(TypedDict):
     llm_calls: int
     tokens: int
     latency: float
+    trace_id: str | None  # Langfuse trace id，未开启追踪时为 None
 
 
 def refusal_text(reason: str = "") -> str:
