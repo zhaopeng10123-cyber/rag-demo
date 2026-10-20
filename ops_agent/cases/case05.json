@@ -1,0 +1,50 @@
+{
+  "id": "case05",
+  "alert": {
+    "host": "inv-01", "metric": "http_p99_ms", "value": 4210, "threshold": 1000,
+    "time": "2026-10-18T11:40:00",
+    "title": "inv-01 接口 P99 延迟 4210ms，超过 1000ms"
+  },
+  "hosts": [
+    {"name": "inv-01", "service": "inventory-api", "az": "az-a", "attrs": {"version": "v3.0.6"}},
+    {"name": "inv-02", "service": "inventory-api", "az": "az-a", "attrs": {"version": "v3.0.6"}},
+    {"name": "inv-03", "service": "inventory-api", "az": "az-b", "attrs": {"version": "v3.0.6"}}
+  ],
+  "metrics": {
+    "inv-01": {
+      "http_p99_ms": {"events": [{"type": "step", "start": -32, "value": 4150, "noise": 200}]},
+      "conn_pool_usage": {"events": [{"type": "step", "start": -32, "value": 100, "noise": 0}]},
+      "cpu_usage": {"events": [{"type": "step", "start": -32, "value": 14}]}
+    },
+    "inv-02": {
+      "http_p99_ms": {"events": [{"type": "step", "start": -32, "value": 3980, "noise": 200}]},
+      "conn_pool_usage": {"events": [{"type": "step", "start": -32, "value": 100, "noise": 0}]},
+      "cpu_usage": {"events": [{"type": "step", "start": -32, "value": 15}]}
+    },
+    "inv-03": {
+      "http_p99_ms": {"events": [{"type": "step", "start": -32, "value": 4320, "noise": 200}]},
+      "conn_pool_usage": {"events": [{"type": "step", "start": -32, "value": 100, "noise": 0}]},
+      "cpu_usage": {"events": [{"type": "step", "start": -32, "value": 13}]}
+    }
+  },
+  "changes": [
+    {"minutes_ago": 180, "target": "inv-01", "hosts": ["inv-01"], "type": "重启",
+     "desc": "例行内核补丁，重启 inv-01", "operator": "ops-bot"},
+    {"minutes_ago": 35, "target": "mysql-inv-01", "type": "数据库变更",
+     "desc": "stock_log 表增加 trace_id 字段（ALTER TABLE，在线 DDL，表大小 1.2 亿行）", "operator": "dba-chen"}
+  ],
+  "logs": {
+    "inv-01": [
+      {"minutes_ago": 28, "level": "ERROR", "msg": "HikariPool-1 - Connection is not available, request timed out after 3000ms", "count": 520},
+      {"minutes_ago": 28, "level": "WARN", "msg": "slow query 8.2s on mysql-inv-01: UPDATE stock SET qty = qty - ? WHERE sku_id = ?", "count": 310},
+      {"minutes_ago": 170, "level": "INFO", "msg": "inventory-api started (pid 4412)", "count": 1}
+    ]
+  },
+  "answer": {
+    "category": "downstream_dependency",
+    "scope": "whole_service",
+    "evidence": ["mysql-inv-01", "慢查询|slow query|DDL|ALTER|连接池"],
+    "required_tools": ["search_logs", "compare_peers"],
+    "summary": "三台 inventory-api 同时延迟飙高、连接池打满而 CPU 反而下降，日志显示 mysql-inv-01 上的慢查询；查数据库的变更可以看到 35 分钟前在 1.2 亿行的表上做在线 DDL。inv-01 三小时前的重启不是原因"
+  }
+}

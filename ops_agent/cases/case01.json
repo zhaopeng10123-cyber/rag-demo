@@ -1,0 +1,54 @@
+{
+  "id": "case01",
+  "alert": {
+    "host": "web-03", "metric": "cpu_usage", "value": 94.8, "threshold": 85,
+    "time": "2026-10-14T15:20:00",
+    "title": "web-03 CPU 使用率 94.8%，连续 10 分钟超过 85%"
+  },
+  "hosts": [
+    {"name": "web-01", "service": "order-api", "az": "az-a", "attrs": {"version": "v2.3.0"}},
+    {"name": "web-02", "service": "order-api", "az": "az-a", "attrs": {"version": "v2.3.0"}},
+    {"name": "web-03", "service": "order-api", "az": "az-a", "attrs": {"version": "v2.3.1"}},
+    {"name": "web-04", "service": "order-api", "az": "az-b", "attrs": {"version": "v2.3.0"}},
+    {"name": "web-05", "service": "order-api", "az": "az-b", "attrs": {"version": "v2.3.1"}},
+    {"name": "web-06", "service": "order-api", "az": "az-b", "attrs": {"version": "v2.3.0"}},
+    {"name": "pay-01", "service": "pay-api", "az": "az-a", "attrs": {"version": "v5.0.2"}},
+    {"name": "user-01", "service": "user-api", "az": "az-a", "attrs": {"version": "v1.8.7"}}
+  ],
+  "metrics": {
+    "web-03": {
+      "cpu_usage": {"events": [{"type": "step", "start": -42, "value": 93}]},
+      "http_p99_ms": {"events": [{"type": "step", "start": -42, "value": 480}]}
+    },
+    "web-05": {
+      "cpu_usage": {"events": [{"type": "step", "start": -42, "value": 90}]},
+      "http_p99_ms": {"events": [{"type": "step", "start": -42, "value": 455}]}
+    }
+  },
+  "changes": [
+    {"minutes_ago": 45, "target": "order-api", "hosts": ["web-03", "web-05"], "type": "发布",
+     "desc": "order-api v2.3.0 → v2.3.1 灰度发布（2/6 台），优化下单价格计算逻辑", "operator": "zhangsan"},
+    {"minutes_ago": 50, "target": "order-api", "hosts": ["web-01", "web-02", "web-03", "web-04", "web-05", "web-06"],
+     "type": "配置变更", "desc": "nginx access_log 格式增加 request_id 字段", "operator": "ops-bot"},
+    {"minutes_ago": 2600, "target": "pay-api", "hosts": ["pay-01"], "type": "发布",
+     "desc": "pay-api v5.0.1 → v5.0.2", "operator": "wangwu"}
+  ],
+  "logs": {
+    "web-03": [
+      {"minutes_ago": 40, "level": "WARN", "msg": "OrderPricingService.calculate 耗时 1850ms（阈值 500ms）", "count": 340},
+      {"minutes_ago": 38, "level": "INFO", "msg": "GC pause 45ms (G1 Young Generation)", "count": 60},
+      {"minutes_ago": 30, "level": "ERROR", "msg": "request timeout: POST /api/order/price (3000ms)", "count": 25},
+      {"minutes_ago": 49, "level": "INFO", "msg": "nginx reloaded: access_log format updated", "count": 1}
+    ],
+    "web-05": [
+      {"minutes_ago": 40, "level": "WARN", "msg": "OrderPricingService.calculate 耗时 1720ms（阈值 500ms）", "count": 310}
+    ]
+  },
+  "answer": {
+    "category": "release_defect",
+    "scope": "partial_hosts",
+    "evidence": ["v2.3.1", "web-05"],
+    "required_tools": ["list_changes", "compare_peers"],
+    "summary": "v2.3.1 灰度发布后价格计算变慢，只有升级了的 web-03、web-05 CPU 飙高；同时段的 nginx 日志格式变更全量下发，但未升级的主机正常，不是原因"
+  }
+}

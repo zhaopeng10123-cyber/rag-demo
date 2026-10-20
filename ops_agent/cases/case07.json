@@ -1,0 +1,38 @@
+{
+  "id": "case07",
+  "alert": {
+    "host": "cache-02", "metric": "mem_usage", "value": 198.4, "threshold": 90,
+    "time": "2026-10-19T16:45:00",
+    "title": "cache-02 内存使用率 198.4%，超过 90%"
+  },
+  "hosts": [
+    {"name": "cache-01", "service": "session-cache", "az": "az-a", "attrs": {"version": "7.2.5", "agent_version": "node-agent v1.9.0"}},
+    {"name": "cache-02", "service": "session-cache", "az": "az-a", "attrs": {"version": "7.2.5", "agent_version": "node-agent v1.9.0"}},
+    {"name": "cache-03", "service": "session-cache", "az": "az-b", "attrs": {"version": "7.2.5", "agent_version": "node-agent v1.8.4"}},
+    {"name": "cache-04", "service": "session-cache", "az": "az-b", "attrs": {"version": "7.2.5", "agent_version": "node-agent v1.8.4"}}
+  ],
+  "metrics": {
+    "cache-01": {"mem_usage": {"base": 52, "events": [{"type": "step", "start": -95, "value": 196}]}},
+    "cache-02": {"mem_usage": {"base": 53, "events": [{"type": "step", "start": -95, "value": 199}]}},
+    "cache-03": {"mem_usage": {"base": 52}},
+    "cache-04": {"mem_usage": {"base": 51}}
+  },
+  "changes": [
+    {"minutes_ago": 100, "target": "session-cache", "hosts": ["cache-01", "cache-02"], "type": "监控 agent 升级",
+     "desc": "node-agent v1.8.4 → v1.9.0 灰度（2/4 台），内存采集改为读取 cgroup v2", "operator": "monitor-bot"}
+  ],
+  "logs": {
+    "cache-02": [
+      {"minutes_ago": 96, "level": "WARN", "msg": "node-agent: memory collector switched to cgroup v2 reader (memory.current includes page cache)", "count": 1},
+      {"minutes_ago": 30, "level": "INFO", "msg": "redis: used_memory_human:3.21G maxmemory:8G evicted_keys:0", "count": 30},
+      {"minutes_ago": 5, "level": "INFO", "msg": "redis: instantaneous_ops_per_sec:4120, connected_clients:212", "count": 5}
+    ]
+  },
+  "answer": {
+    "category": "false_alarm",
+    "scope": "no_impact",
+    "evidence": ["node-agent|监控 agent|采集", "v1.9.0|cgroup"],
+    "required_tools": ["list_changes", "compare_peers"],
+    "summary": "内存使用率超过 100% 本身就不合理。只有升级了 node-agent v1.9.0 的 cache-01、cache-02 报 200% 左右，未升级的两台正常；redis 实际只用了 3.2G/8G，没有驱逐，是新版采集把 page cache 算进去导致的误报"
+  }
+}

@@ -7,3 +7,4 @@ __pycache__/
 eval/results/
 experiments/llamaindex/results/
 experiments/vector-db/volumes/
+ops_agent/results/
