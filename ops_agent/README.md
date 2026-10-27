@@ -138,6 +138,14 @@ DeepSeek-V3.2 类别 7/7 全对，8B 的"分析对了、标签贴错"问题基�
 - `query_metrics` 的"前一天同时段"同时给出最大值；
 - 排查"强模型打满轮数上限"的现象：更明确的停止条件，或者观察连续无新信息时提前收敛。
 
+## 观测
+
+接入主线的 `tracing.py`（Langfuse，OTel 协议）：
+
+- 交互运行（`--case`）和评测运行各产生一条 trace；评测一次对应一个 Langfuse session（`ops-eval-<时间戳>`），session id 记在结果 JSON 的 `meta.langfuse_session` 里，结果和 trace 可以互相定位；
+- 评测分数（类别 / 范围 / 证据召回 / 工具覆盖）按 BOOLEAN / NUMERIC 写回对应 trace，dashboard 里可以直接按分数筛选定位跑坏的 case；
+- 未配置 `LANGFUSE_*` 环境变量时全部 no-op，离线测试不受影响。
+
 ## 测试
 
 `tests/test_ops_agent.py` 用剧本模型离线运行，覆盖：case 数据自洽（告警值和生成的指标对得上）、7 个 case 的可解性、4 个工具的过滤和匹配规则、正常收敛、到达轮数上限直接出报告、报告解析失败、评分函数。
