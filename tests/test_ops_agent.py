@@ -10,6 +10,7 @@ from ops_agent.data import CATEGORY_NAMES, DEFAULT_METRICS, HISTORY_MINUTES, loa
 from ops_agent.diag_tools import TOOLS, OpsContext
 from ops_agent.evaluate import score
 from ops_agent.graph import REPORT_PROMPT, RootCauseReport, alert_message, ask, build_graph
+from ops_agent.scope_rule import rule_scope
 from tests.fake_models import ScriptedChatModel, tool_call
 
 CASES = load_cases()
@@ -125,6 +126,24 @@ def test_compare_peers_groups(run):
                                                                 metric="disk_usage"))
 
 
+@pytest.mark.parametrize("case_id", sorted(CASES))
+def test_rule_scope(case_id):
+    c = CASES[case_id]
+    assert rule_scope(c, c.answer.category)[0] == c.answer.scope
+    # 除监控误报外，范围只看主机数据，和模型给的类别无关
+    if c.answer.category != "false_alarm":
+        assert rule_scope(c, "config_change")[0] == rule_scope(c, None)[0] == c.answer.scope
+
+
+def test_rule_scope_layers():
+    # case07 类别判错时，靠百分比超过 100 仍判为无实际影响
+    scope, reason = rule_scope(CASES["case07"], "resource_leak")
+    assert scope == "no_impact" and "超过 100" in reason
+    # 模型把真实故障判成误报时，规则跟着判错，这是分层规则的代价
+    assert rule_scope(CASES["case06"], "false_alarm")[0] == "no_impact"
+    assert "web-03、web-05" in rule_scope(CASES["case01"], "release_defect")[1]
+
+
 def report(**kw) -> RootCauseReport:
     fields = dict(category="downstream_dependency", scope="whole_service", root_cause="mysql-inv-01 在线 DDL",
                   evidence=["slow query on mysql-inv-01"], suggested_actions=["暂停 DDL"], confidence="high")
@@ -143,6 +162,7 @@ def test_graph_react_loop():
     assert result["tools_used"] == ["compare_peers", "search_logs"]
     assert result["conclusion"].startswith("三台都慢")
     assert result["report"].category == "downstream_dependency" and result["error"] == ""
+    assert result["rule_scope"] == "whole_service" and "3 台主机都异常" in result["rule_reason"]
     assert llm.bound_tools[0] == [t.name for t in TOOLS]
     # 系统提示之后是告警，工具结果来自 case05 的数据（context 注入生效）
     _, first, *_, last = llm.received[-1]
@@ -159,19 +179,27 @@ def test_graph_round_limit_goes_to_report():
     assert result["report"] is not None and len(llm.received) == 2
 
 
+def test_graph_keeps_model_scope():
+    llm = ScriptedChatModel(responses=[AIMessage("缓存内存泄漏"), report(category="resource_leak", scope="partial_hosts")])
+    result = ask(build_graph(llm), CASES["case07"])
+    assert result["report"].scope == "partial_hosts" and result["rule_scope"] == "no_impact"
+
+
 def test_graph_report_failure():
     llm = ScriptedChatModel(responses=[AIMessage("直接结论"), AIMessage("不是结构化输出")])
     result = ask(build_graph(llm), CASES["case07"])
     assert result["rounds"] == [] and result["report"] is None
     assert "AssertionError" in result["error"]
+    # 没有报告时规则只看主机数据
+    assert result["rule_scope"] == "no_impact"
 
 
 def test_score():
     result = {"report": report(scope="single_host"), "rounds": [["search_logs(host=inv-01)"]],
               "tools_used": ["search_logs"], "conclusion": "", "error": "", "llm_calls": 3, "tokens": 100,
-              "latency": 1.0}
+              "latency": 1.0, "rule_scope": "whole_service", "rule_reason": ""}
     row = score(CASES["case05"], result)
-    assert row["category_ok"] and not row["scope_ok"]
+    assert row["category_ok"] and not row["scope_ok"] and row["rule_scope_ok"]
     assert row["evidence_recall"] == 1.0 and row["missed_tools"] == ["compare_peers"]
     empty = score(CASES["case05"], result | {"report": None, "error": "x"})
     assert empty["got"] == "无报告" and empty["evidence_recall"] == 0

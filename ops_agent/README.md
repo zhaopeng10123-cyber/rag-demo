@@ -14,6 +14,8 @@ python -m ops_agent --case case01     # 跑一个 case，实时打印每轮调�
 python -m ops_agent --draw            # 导出状态图到 docs/ops_agent.mmd
 python -m ops_agent.evaluate          # 跑全部 case 并打分，结果存到 ops_agent/results/
 python -m ops_agent.evaluate --case case04 case05 --pause 30
+python -m ops_agent.evaluate --case case07 --repeat 3            # 同一个 case 跑 3 次
+python -m ops_agent.evaluate --rescore ops_agent/results/eval-*.json  # 不调用模型，对历史结果重算规则范围
 pytest tests/test_ops_agent.py        # 离线测试，不需要 API Key
 ```
 
@@ -22,12 +24,13 @@ pytest tests/test_ops_agent.py        # 离线测试，不需要 API Key
 ```
 START -> agent --有工具调用--> tools --未到轮数上限--> agent
            |                     |--到达上限（8 轮）--> report
-           |--不再调用工具--> report -> END
+           |--不再调用工具--> report -> scope_rule -> END
 ```
 
 - **agent**：`llm.bind_tools(TOOLS)`，系统提示只给通用的 SRE 排查方法（先看指标形态，再用同类主机确定范围，最后查变更和日志对时间），不提任何 case 的细节。一轮可以并行调用多个工具。
 - **tools**：`ToolNode` 执行工具调用。
 - **report**：`with_structured_output(RootCauseReport, method="function_calling")`，把整段排查过程整理成固定结构：根因类别、影响范围、根因、证据、处置建议、把握程度。
+- **scope_rule**：`scope_rule.py` 按主机数据重新计算影响范围，写进状态的 `rule_scope` / `rule_reason`。报告里模型自己给的 `scope` 保留不动，两者可以对照（见下文"影响范围的规则计算"）。
 
 为什么拆成两个节点，而不是让 agent 最后直接输出结构化结果（`create_agent` 的 `response_format`）：排查阶段要的是自由推理和随时调用工具；报告阶段要的是字段稳定，方便评估。拆开后两边的提示各管一件事。报告解析失败时只把 `report` 记为空，不会让整张图报错。
 
@@ -77,7 +80,7 @@ case05 的数据库变更只有用 `list_changes("mysql-inv-01")` 才查得到�
 
 `evaluate.py` 对每个 case 记录：
 
-- **类别 / 范围**：报告的 `category`、`scope` 和标准答案是否一致；
+- **类别 / 范围**：报告的 `category`、`scope` 和标准答案是否一致；规则计算的范围单独记为 `rule_scope_ok`；
 - **证据召回**：标准答案列了 2 组关键证据（每组几种同义写法），报告的根因和证据里命中了几组；
 - **必需工具**：标准答案认为必须用到的工具是否都调用过，比如 case01 不看 `compare_peers` 就分不清是灰度还是全量问题；
 - **成本**：工具轮数、工具调用次数、LLM 调用次数、tokens、耗时。
@@ -106,12 +109,41 @@ case05 的数据库变更只有用 `list_changes("mysql-inv-01")` 才查得到�
 
 ### 换强模型后的行为差异
 
-DeepSeek-V3.2 类别 7/7 全对，8B 的"分析对了、标签贴错"问题基本消失，只剩 case07 的范围判断还是错（partial_hosts，实际无实际影响）——8B 两轮和 V3.2 栽在同一个地方，这坐实了影响范围不该交给模型自由判断，改进方向是按 `compare_peers` 的数据用规则计算。
+DeepSeek-V3.2 类别 7/7 全对，8B 的"分析对了、标签贴错"问题基本消失，只剩 case07 的范围判断还是错（partial_hosts，实际无实际影响）——8B 两轮和 V3.2 栽在同一个地方，这坐实了影响范围不该交给模型自由判断，于是改成按 `compare_peers` 的数据用规则计算（见下文 A/B）。
 
 两个明显的行为差异：
 
 - **从不主动停止**。V3.2 每个 case 都打满 8 轮工具上限后被强制进 report（8B 平均 2.4 轮就主动收工），每轮只调 1 个工具，不做并行调用。轮数上限这个兜底设计在强模型上反而成了必需品——没有它，排查会无限继续下去。tokens 涨到 8B 的 1.7 倍，但 V3.2 不开思考模式单次调用快，平均耗时反而从 241s 降到 121s。
 - **证据召回不升反降**（93% → 86%）：case02、case05 各缺一组关键证据，V3.2 结论对了但报告里没写出标准答案要求的那个具体证据（如 case02 的锯齿周期）。
+
+### 影响范围的规则计算（A/B）
+
+A 是模型在报告里自己给的 `scope`，B 是 `scope_rule` 节点按规则算的 `rule_scope`，同一次运行里两个都保留。规则分两层：
+
+1. **异常是否真实**：模型给的根因类别是 `false_alarm`，或者百分比指标当前值超过 100（物理上不可能），判为无实际影响；
+2. **异常分布**：取 `compare_peers` 范围内的主机（同服务、同可用区其他服务），用和它相同的窗口算每台主机最近 10 分钟均值和基线（1 小时前、1 天前两个窗口中较低的一个）。超过告警阈值，或涨幅达到告警主机涨幅的一半，就算异常。然后：同可用区其他服务的主机有一半以上异常为整个可用区；同服务主机全部异常为整个服务；同服务部分异常为部分主机；否则为单台主机。
+
+基线取两个窗口中较低的一个，突变（1 小时前正常）和缓慢上涨（case03，1 天前正常）都能识别。"涨幅一半"这个阈值有足够的余量：7 个 case 里异常主机的涨幅比都在 0.77 以上，正常主机都在 0.06 以下，阈值取 0.1~0.75 结果都一样。不过规则是对着这 7 个 case 设计的，在这套数据上 7/7 正确不能说明它能推广到别的场景。
+
+**离线重算**：`python -m ops_agent.evaluate --rescore <结果文件>` 不调用模型，用历史结果里模型给的类别重新计算 B。
+
+| 轮次 | A 模型范围 | B 规则范围 | B 和 A 不同的 case |
+|---|---|---|---|
+| Qwen3-8B 第一轮 | 4/7 | 7/7 | case01、case03、case07 被纠正 |
+| Qwen3-8B 第二轮 | 2/7 | 6/7 | case01、03、04、05、07 被纠正；case06 被改错 |
+| DeepSeek-V3.2 | 6/7 | 7/7 | case07 被纠正 |
+| 合计 | 12/21（57%） | 20/21（95%） | |
+
+**case07 实测**：`python -m ops_agent.evaluate --case case07 --repeat 3`，两个模型各跑 3 次：
+
+| 模型 | 模型给的类别 | A 模型范围 | B 规则范围 | B 走的是哪一层 |
+|---|---|---|---|---|
+| Qwen3-8B | 3 次都是 config_change | partial_hosts ×2、single_host ×1，0/3 | 3/3 | 百分比超过 100 |
+| DeepSeek-V3.2 | 3 次都是 false_alarm | 3 次都是 partial_hosts，0/3 | 3/3 | 类别为误报 |
+
+加上历史 3 轮，case07 一共 9 次运行，模型给的范围 0/9，规则 9/9。两个模型错法不同：8B 认不出这是误报，所以范围也错了；V3.2 判对了误报，却还是按"2 台主机指标高"填了部分主机，类别和范围自相矛盾，说明模型把"范围"理解成异常主机的分布，而没有理解成业务影响。两层规则正好各自兜住一种错法。
+
+代价也很清楚：第一层依赖模型的类别。Qwen 第二轮 case06 把定时备份误判成 `false_alarm`，模型给的范围 single_host 本来是对的，规则跟着类别改成了 no_impact。所以 B 不能完全取代 A：类别判错时规则会跟着错，但范围至少和类别保持一致。
 
 ### 8B 两轮都出现的问题（保留作记录）
 
@@ -133,7 +165,7 @@ DeepSeek-V3.2 类别 7/7 全对，8B 的"分析对了、标签贴错"问题基�
 可以继续做的：
 
 - 每个 case 跑 3~5 次，取平均值和方差；
-- 影响范围改成用 `compare_peers` 的数据按规则计算，不交给模型判断（8B 和 V3.2 都栽在这，优先级最高）；
+- ~~影响范围改成用 `compare_peers` 的数据按规则计算~~，已完成，见下文；
 - `search_logs` 按关键词没有命中时，提示"不加关键词有 N 条"；
 - `query_metrics` 的"前一天同时段"同时给出最大值；
 - 排查"强模型打满轮数上限"的现象：更明确的停止条件，或者观察连续无新信息时提前收敛。
@@ -143,9 +175,9 @@ DeepSeek-V3.2 类别 7/7 全对，8B 的"分析对了、标签贴错"问题基�
 接入主线的 `tracing.py`（Langfuse，OTel 协议）：
 
 - 交互运行（`--case`）和评测运行各产生一条 trace；评测一次对应一个 Langfuse session（`ops-eval-<时间戳>`），session id 记在结果 JSON 的 `meta.langfuse_session` 里，结果和 trace 可以互相定位；
-- 评测分数（类别 / 范围 / 证据召回 / 工具覆盖）按 BOOLEAN / NUMERIC 写回对应 trace，dashboard 里可以直接按分数筛选定位跑坏的 case；
+- 评测分数（类别 / 范围 / 规则范围 / 证据召回 / 工具覆盖）按 BOOLEAN / NUMERIC 写回对应 trace，dashboard 里可以直接按分数筛选定位跑坏的 case；
 - 未配置 `LANGFUSE_*` 环境变量时全部 no-op，离线测试不受影响。
 
 ## 测试
 
-`tests/test_ops_agent.py` 用剧本模型离线运行，覆盖：case 数据自洽（告警值和生成的指标对得上）、7 个 case 的可解性、4 个工具的过滤和匹配规则、正常收敛、到达轮数上限直接出报告、报告解析失败、评分函数。
+`tests/test_ops_agent.py` 用剧本模型离线运行，覆盖：case 数据自洽（告警值和生成的指标对得上）、7 个 case 的可解性、4 个工具的过滤和匹配规则、正常收敛、到达轮数上限直接出报告、报告解析失败、评分函数；以及规则范围在 7 个 case 上的结果、分层规则的两种走向、图里模型范围和规则范围分开保存。

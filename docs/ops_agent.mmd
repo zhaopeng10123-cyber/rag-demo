@@ -8,13 +8,15 @@ graph TD;
 	agent(agent)
 	tools(tools)
 	report(report)
+	scope_rule(scope_rule)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> agent;
 	agent -.-> report;
 	agent -.-> tools;
+	report --> scope_rule;
 	tools -.-> agent;
 	tools -.-> report;
-	report --> __end__;
+	scope_rule --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
