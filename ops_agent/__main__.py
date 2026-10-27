@@ -28,6 +28,7 @@ def print_result(result: dict, case) -> None:
         print(f"根因：{report.root_cause}")
         print("证据：\n" + "\n".join(f"  - {e}" for e in report.evidence))
         print("建议：\n" + "\n".join(f"  - {a}" for a in report.suggested_actions))
+    print(f"规则计算的影响范围：{SCOPE_NAMES[result['rule_scope']]}（{result['rule_scope']}），{result['rule_reason']}")
     answer = case.answer
     print(f"\n参考答案：{CATEGORY_NAMES[answer.category]} / {SCOPE_NAMES[answer.scope]}。{answer.summary}")
     print(f"（LLM 调用 {result['llm_calls']} 次，{result['tokens']} tokens，{result['latency']:.1f}s）")

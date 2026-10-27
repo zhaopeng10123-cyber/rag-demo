@@ -2,10 +2,11 @@
 
     START -> agent --有工具调用--> tools --未到轮数上限--> agent
                |                     |--到达上限--> report
-               |--不再调用工具--> report -> END
+               |--不再调用工具--> report -> scope_rule -> END
 
 agent 只负责"想下一步查什么"，report 只负责"把查到的东西整理成固定结构"。拆开后，
 排查过程可以用自由文本推理，报告字段又能稳定地拿来评估；轮数上限保证一定能收敛。
+scope_rule 按主机数据规则重算影响范围，报告里模型自己给的范围保留不动，两者可以对照。
 """
 import time
 from collections.abc import Callable
@@ -17,11 +18,13 @@ import tracing
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field
 from tools import CallCounter
 
-from ops_agent.data import Case, Category, Scope, category_choices, scope_choices
+from ops_agent.data import Case, Category, Scope, category_choices, load_cases, scope_choices
 from ops_agent.diag_tools import TOOLS, OpsContext
+from ops_agent.scope_rule import rule_scope
 
 MAX_TOOL_ROUNDS = 8
 
@@ -55,6 +58,8 @@ class RootCauseReport(BaseModel):
 class OpsState(MessagesState):
     report: RootCauseReport | None
     error: str
+    rule_scope: Scope | None
+    rule_reason: str
 
 
 def alert_message(case: Case) -> str:
@@ -86,6 +91,11 @@ def build_graph(llm=None, max_tool_rounds: int = MAX_TOOL_ROUNDS):
             return {"report": None, "error": f"{type(e).__name__}: {e}"}
         return {"report": result, "error": "" if result else "模型没有输出报告"}
 
+    def scope_rule(state: OpsState, runtime: Runtime[OpsContext]) -> dict:
+        case = load_cases()[runtime.context.case_id]
+        scope, reason = rule_scope(case, state["report"].category if state["report"] else None)
+        return {"rule_scope": scope, "rule_reason": reason}
+
     def after_agent(state: OpsState) -> str:
         return "tools" if state["messages"][-1].tool_calls else "report"
 
@@ -96,10 +106,12 @@ def build_graph(llm=None, max_tool_rounds: int = MAX_TOOL_ROUNDS):
     graph.add_node("agent", agent)
     graph.add_node("tools", ToolNode(TOOLS))
     graph.add_node("report", report)
+    graph.add_node("scope_rule", scope_rule)
     graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", after_agent, {"tools": "tools", "report": "report"})
     graph.add_conditional_edges("tools", after_tools, {"agent": "agent", "report": "report"})
-    graph.add_edge("report", END)
+    graph.add_edge("report", "scope_rule")
+    graph.add_edge("scope_rule", END)
     return graph.compile(name="ops_agent")
 
 
@@ -113,7 +125,8 @@ def ask(app, case: Case, on_step: Callable[[str], None] | None = None, session_i
     """跑一个 case，返回报告、工具调用轨迹和成本。on_step 在每个节点结束时收到一行进度。"""
     counter = CallCounter()
     start = time.perf_counter()
-    inputs = {"messages": [HumanMessage(alert_message(case))], "report": None, "error": ""}
+    inputs = {"messages": [HumanMessage(alert_message(case))], "report": None, "error": "",
+              "rule_scope": None, "rule_reason": ""}
     trace_id = tracing.new_trace_id()
     cfg = tracing.traced({"callbacks": [counter], "recursion_limit": 4 * MAX_TOOL_ROUNDS + 10}, "ops_agent",
                          trace_id=trace_id, session_id=session_id, tags=["ops_agent", case.id, *(tags or [])],
@@ -135,6 +148,8 @@ def ask(app, case: Case, on_step: Callable[[str], None] | None = None, session_i
     return {
         "case_id": case.id,
         "report": state["report"],
+        "rule_scope": state["rule_scope"],
+        "rule_reason": state["rule_reason"],
         "error": state["error"],
         "rounds": rounds,
         "tools_used": sorted({c.split("(")[0] for r in rounds for c in r}),

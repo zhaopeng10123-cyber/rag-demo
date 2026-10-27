@@ -177,7 +177,7 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com   # 美国区用 https://us.cloud.l
 
 所有 trace 都带上当前模型名作为标签，方便按模型筛选和对比。
 
-命令行入口在回答后打印 trace 链接；HTTP 接口在 `done` 事件里返回 `trace_id`。评测脚本还会把分数写回对应的 trace：`eval/evaluate_agent.py` 写路由、拒答、检索命中、关键点覆盖、指代改写是否正确；`python -m ops_agent.evaluate` 写根因类别、影响范围、证据召回、必需工具覆盖。这样在 Langfuse 里按分数筛出失败的 trace，就能直接看到模型当时拿到了什么、怎么推理的。
+命令行入口在回答后打印 trace 链接；HTTP 接口在 `done` 事件里返回 `trace_id`。评测脚本还会把分数写回对应的 trace：`eval/evaluate_agent.py` 写路由、拒答、检索命中、关键点覆盖、指代改写是否正确；`python -m ops_agent.evaluate` 写根因类别、影响范围（模型给的和规则算的各一个）、证据召回、必需工具覆盖。这样在 Langfuse 里按分数筛出失败的 trace，就能直接看到模型当时拿到了什么、怎么推理的。
 
 实现上的几个取舍：
 
@@ -187,7 +187,7 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com   # 美国区用 https://us.cloud.l
 
 ## 告警根因定位 Agent（ops_agent）
 
-[`ops_agent/`](ops_agent/) 是一个独立的 LangGraph 练习：合成 7 个云主机告警 case（发布缺陷、配置错误、内存泄漏、下游数据库、可用区网络、定时备份、监控误报各一个，都带干扰项），给模型 4 个只读诊断工具（指标、变更、日志、同类主机对比），用手写的 ReAct 状态图让它自己排查，最后由单独的节点输出结构化根因报告，再和标准答案比对。
+[`ops_agent/`](ops_agent/) 是一个独立的 LangGraph 练习：合成 7 个云主机告警 case（发布缺陷、配置错误、内存泄漏、下游数据库、可用区网络、定时备份、监控误报各一个，都带干扰项），给模型 4 个只读诊断工具（指标、变更、日志、同类主机对比），用手写的 ReAct 状态图让它自己排查，最后由单独的节点输出结构化根因报告，影响范围再按主机数据用规则重算一遍，和模型给的对照，都和标准答案比对。
 
 ```bash
 python -m ops_agent --case case01     # 跑一个 case，实时打印每轮调用的工具
@@ -196,7 +196,7 @@ python -m ops_agent.evaluate          # 跑全部 case 并打分
 
 ![ops_agent 状态图](docs/ops_agent.png)
 
-用 Qwen3-8B 跑了两轮：必需工具都调用到了，case05 还会顺着日志去查数据库的变更；但根因类别准确率只有 43%~71%，影响范围 29%~57%，两轮之间波动很大。错误主要出在读工具输出和下结论两步。数据生成方式、工具设计、评估指标和逐个 case 的失败分析见 [ops_agent 说明](ops_agent/README.md)。
+用 Qwen3-8B 跑了两轮：必需工具都调用到了，case05 还会顺着日志去查数据库的变更；但根因类别准确率只有 43%~71%，影响范围 29%~57%，两轮之间波动很大。换成 DeepSeek-V3.2 后类别 7/7 全对，但 case07（监控误报）的影响范围仍然判错。影响范围改成按 `compare_peers` 的数据用规则计算后，历史 3 轮 21 个结果从 57% 提升到 95%，case07 在两个模型上 9 次运行都由全错变成全对。数据生成方式、工具设计、评估指标和逐个 case 的失败分析见 [ops_agent 说明](ops_agent/README.md)。
 
 ## 评估
 
